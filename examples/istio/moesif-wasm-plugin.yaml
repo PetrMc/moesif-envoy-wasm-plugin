@@ -12,7 +12,7 @@ spec:
   phase: AUTHZ
   priority: 10
   pluginConfig:
-    moesif_application_id: <YOUR MOESIF APPLICATION ID>
+    moesif_application_id: "eyJhcHAiOiI0OTM6MTI4NiIsInZlciI6IjIuMSIsIm9yZyI6IjU3Mzo1NzAiLCJpYXQiOjE3MjI0NzA0MDB9.Bg4CIwiKtLgcv0vfNK-B6ztAe2KuYRM7ThIAaDz1D9I"
     user_id_header: X-User-Example-Header
     company_id_header: X-Company-Example-Header
     upstream: outbound|443||api.moesif.net

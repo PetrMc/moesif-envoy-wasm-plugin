@@ -1,0 +1,28 @@
+fn main() {
+    let proto_dir = std::path::Path::new("proto");
+
+    std::fs::create_dir_all("src/proto").expect("Failed to create output directory");
+
+    tonic_build::configure()
+        .build_server(true)
+        .out_dir("src/proto")
+        .extern_path(".envoy.config.core.v3.Metadata", "crate::envoy_config_core_v3::Metadata")
+        .extern_path(".envoy.config.core.v3.HeaderMap", "crate::envoy_config_core_v3::HeaderMap")
+        .extern_path(".envoy.config.core.v3.HeaderValueOption", "crate::envoy_config_core_v3::HeaderValueOption")
+        .extern_path(".envoy.config.core.v3.SemanticVersion", "crate::envoy_config_core_v3::SemanticVersion")
+        .extern_path(".envoy.config.core.v3.Percent", "crate::envoy_config_core_v3::Percent")
+        .extern_path(".envoy.config.core.v3.FractionalPercent", "crate::envoy_config_core_v3::FractionalPercent")
+        .extern_path(".envoy.extensions.filters.http.ext_proc.v3.ProcessingMode", "crate::envoy_extensions_filters_http_ext_proc_v3::ProcessingMode")
+        .extern_path(".envoy.r#type.v3.HttpStatus", "crate::envoy_type_v3::HttpStatus")
+        .extern_path(".envoy.r#type.v3.SemanticVersion", "crate::envoy_type_v3::SemanticVersion")
+        .extern_path(".xds.core.v3.ContextParams", "crate::xds_core_v3::ContextParams")
+        .extern_path(".xds.core.v3", "crate::xds_core_v3")
+        .compile(
+            &[
+                proto_dir.join("envoy/config/core/v3/base.proto").to_str().unwrap(),
+                proto_dir.join("envoy/service/ext_proc/v3/external_processor.proto").to_str().unwrap(),
+            ],
+            &[proto_dir.to_str().unwrap()],
+        )
+        .expect("Failed to compile protos");
+}

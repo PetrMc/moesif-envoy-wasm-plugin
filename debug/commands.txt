@@ -1,0 +1,59 @@
+glooctl install gateway enterprise --license-key=$GLOO_GATEWAY_LICENSE_KEY --values - <<EOF
+observability:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  defaultInstallationEnabled: false  
+EOF
+
+
+helm install -n gloo-system gloo-gateway gloo/gloo \
+--create-namespace \
+--version 1.17.3 \
+--set kubeGateway.enabled=true \
+--set gloo.disableLeaderElection=true \
+--set gatewayProxies.gatewayProxy.disabled=true \
+--set-string license_key=$GLOO_LICENSE_KEY
+
+helm upgrade --install gloo glooe/gloo-ee --namespace gloo-system \
+  --create-namespace --version 1.17.0 --set-string license_key=$GLOO_LICENSE_KEY
+
+helm uninstall gloo --namespace gloo-system
+
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+
+helm install -n gloo-system gloo-gateway glooe/gloo-ee \
+--create-namespace \
+--version 1.17.0 \
+--set-string license_key=$GLOO_LICENSE_KEY \
+--set gloo.kubeGateway.enabled=true \
+--set gloo.gloo.disableLeaderElection=true \
+--set gloo.discovery.enabled=false \
+--set observability.enabled=false \
+--set prometheus.enabled=false \
+--set grafana.defaultInstallationEnabled=false \
+--set gloo-fed.enabled=false \
+--set gloo-fed.glooFedApiserver.enabled=false \
+--set gloo.gatewayProxies.gatewayProxy.disabled=true
+
+kubectl get cm gloo-proxy-http -o json | jq -r '.data["envoy.yaml"]' | yq eval -P -
+curl -vik http://$INGRESS_GW_ADDRESS:8080/headers -H "host: moesif.example.com:8080"
+
+kubectl create secret generic --save-config -n gloo-system license --from-literal=license-key=$GLOO_LICENSE_KEY --dry-run=client -o yaml | kubectl apply -f - 
+kubectl -n gloo-system rollout restart deploy/gloo
+
+spec:
+  extProc:
+    allowModeOverride: false
+    failureModeAllow: false
+    filterStage:
+      predicate: After
+      stage: AuthZStage
+    grpcService:
+      extProcServerRef:
+        name: ext-proc-grpc
+        namespace: gloo-system
+    processingMode:
+      requestHeaderMode: SEND
+      responseHeaderMode: SKIP

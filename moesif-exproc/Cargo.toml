@@ -1,0 +1,19 @@
+[package]
+name = "moesif_solo_exproc_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = { version = "0.4.17", package = "log" }
+chrono = { version = "0.4.26", default-features = false, features = ["clock", "std"] }
+serde = { version = "1.0.158", features = ["derive"] }
+serde_json = "1.0.94"
+base64 = "0.21.2"
+uuid = { version = "0.8.2", features = ["v4"] }
+regex = "1.5.4"
+hyper = { version = "0.14", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+
+[[bin]]
+name = "moesif_solo_exproc_plugin"
+path = "src/main.rs"

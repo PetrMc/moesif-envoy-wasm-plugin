@@ -1,0 +1,16 @@
+[package]
+name = "simple-rust-app"
+version = "0.1.5"
+edition = "2018"
+
+[dependencies]
+hyper = { version = "0.14", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+prost = "0.8"
+prost-types = "0.8"
+tonic = { version = "0.5", features = ["transport"] }
+tokio-stream = "0.1"
+
+[build-dependencies]
+tonic-build = "0.5"
+
