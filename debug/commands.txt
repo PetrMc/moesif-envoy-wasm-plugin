@@ -57,3 +57,30 @@ spec:
     processingMode:
       requestHeaderMode: SEND
       responseHeaderMode: SKIP
+
+ docker build -t simple-rust-app .
+ docker images | grep simple
+ docker tag simple-rust-app:latest mcallisterpetr/simple-rust-app:0.1.7
+ docker push mcallisterpetr/simple-rust-app:0.1.7
+
+ # Variables to configure
+# export AWS_REGION=us-west-1
+# export AWS_REGION=ap-northeast-2
+export AWS_REGION=ca-central-1
+# export AWS_PROFILE=default
+export AWS_PROFILE=marketplace
+OWNER_NAME=$(whoami)
+EKS_VERSION=1.30
+export CLUSTER_NAME=gg-extproc-1-${OWNER_NAME}
+# export CLUSTER_NAME=schema-test-2-${OWNER_NAME}-EKS${EKS_VERSION//./}
+NUMBER_NODES=2
+NODE_TYPE="c7i.xlarge" 
+# Graviton
+# export NODE_TYPE=m6g.large
+
+eksctl create cluster --region $AWS_REGION \
+  --name $CLUSTER_NAME \
+  --nodes $NUMBER_NODES \
+  --node-type $NODE_TYPE \
+  --tags "created-by=$OWNER_NAME" \
+  --version=$EKS_VERSION 

@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: moesif-exproc-plugin
-          image: mcallisterpetr/simple-rust-app:0.1.5
+          image: mcallisterpetr/simple-rust-app:0.1.7
           imagePullPolicy: Always
           ports:
             - containerPort: 50051
