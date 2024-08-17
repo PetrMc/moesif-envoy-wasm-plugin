@@ -1,6 +1,6 @@
 [package]
 name = "simple-rust-app"
-version = "0.1.7"
+version = "0.2.12"
 edition = "2018"
 
 [dependencies]
