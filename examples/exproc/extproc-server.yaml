@@ -1,0 +1,77 @@
+kubectl apply -f- <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server-exproc-plugin
+  namespace: gloo-system
+spec:
+  selector:
+    matchLabels:
+      app: server-exproc-plugin
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: server-exproc-plugin
+    spec:
+      containers:
+        - name: server-exproc-plugin
+          image: mcallisterpetr/server-exproc-plugin:0.1.9
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9090
+          env:
+            - name: RUST_LOG
+              value: "trace"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-exproc-plugin
+  namespace: gloo-system
+  labels:
+    app: server-exproc-plugin
+  annotations:
+    gloo.solo.io/h2_service: "true"
+spec:
+  ports:
+  - port: 4446
+    targetPort: 9090
+    protocol: TCP
+  selector:
+    app: server-exproc-plugin
+---
+apiVersion: gloo.solo.io/v1
+kind: Upstream
+metadata:
+  labels:
+    app: server-exproc-plugin
+    discovered_by: kubernetesplugin
+  name: server-exproc-plugin
+  namespace: gloo-system
+spec:
+  discoveryMetadata: {}
+  useHttp2: true
+  kube:
+    selector:
+      app: server-exproc-plugin
+    serviceName: server-exproc-plugin
+    serviceNamespace: gloo-system
+    servicePort: 4446
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: HTTPRoute
+metadata:
+  name: server-exproc-plugin
+  namespace: httpbin
+spec:
+  parentRefs:
+    - name: http
+      namespace: gloo-system
+  hostnames:
+    - "server.example.com"
+  rules:
+    - backendRefs:
+        - name: httpbin
+          port: 8000
+EOF

@@ -60,8 +60,14 @@ spec:
 
  docker build -t simple-rust-app .
  docker images | grep simple
- docker tag simple-rust-app:latest mcallisterpetr/simple-rust-app:0.2.14
- docker push mcallisterpetr/simple-rust-app:0.2.14
+ docker tag simple-rust-app:latest mcallisterpetr/simple-rust-app:0.2.25
+ docker push mcallisterpetr/simple-rust-app:0.2.25
+
+RUSTFLAGS='-C target-feature=+crt-static' cargo build --release
+docker build -t server-exproc-plugin .
+docker tag server-exproc-plugin:latest mcallisterpetr/server-exproc-plugin:0.1.8
+docker push mcallisterpetr/server-exproc-plugin:0.1.8
+
  # Variables to configure
 # export AWS_REGION=us-west-1
 # export AWS_REGION=ap-northeast-2
@@ -88,3 +94,153 @@ eksctl create cluster --region $AWS_REGION \
  kubectl logs gloo-proxy-http-d5c8fb94f-8hkzk > /tmp/b.txt
 
  https://chatgpt.com/c/afaad267-dd6f-4ffa-9ee8-f32cf7229285
+ 
+ grpcurl -plaintext -import-path debug/simple-rust-app/proto \
+    -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":authority",
+                  "value": "example.com"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":path",
+                  "value": "/test"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":method",
+                  "value": "GET"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":scheme",
+                  "value": "http"
+                }
+              }
+            ],
+            "end_of_stream": false
+          }
+        }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process
+{
+  "requestHeaders": {
+    "response": {}
+  },
+  "dynamicMetadata": {
+    "static_key": "static_value"
+  },
+  "modeOverride": {
+    "requestHeaderMode": "SEND",
+    "responseHeaderMode": "SEND",
+    "requestBodyMode": "BUFFERED",
+    "responseBodyMode": "BUFFERED",
+    "requestTrailerMode": "SEND",
+    "responseTrailerMode": "SEND"
+  }
+}
+
+ grpcurl -plaintext -import-path debug/simple-rust-app/proto \
+    -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":authority",
+                  "value": "example.com"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":path",
+                  "value": "/test"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":method",
+                  "value": "GET"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":scheme",
+                  "value": "http"
+                }
+              }
+            ],
+            "end_of_stream": false
+          }
+        }' localhost:18080 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+kubectl cp debug/simple-rust-app/proto tmp-shell:/tmp/proto
+
+
+grpcurl -plaintext -import-path /tmp/proto  \
+    -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "key": ":authority",
+                "value": "example.com"
+              },
+              {
+                "key": ":path",
+                "value": "/test"
+              }
+            ]
+          },
+          "end_of_stream": true
+        }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+grpcurl -v -plaintext -import-path /tmp/proto  \
+    -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":authority",
+                  "value": "example.com"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":path",
+                  "value": "/test"
+                }
+              }
+            ],
+            "end_of_stream": false
+          }
+        }' moesif-exproc-plugin:4445 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+grpcurl -v -plaintext -import-path /tmp/proto  \
+    -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":authority",
+                  "value": "example.com"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":path",
+                  "value": "/test"
+                }
+              }
+            ],
+            "end_of_stream": false
+          }
+        }' ext-proc-grpc:4444 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
