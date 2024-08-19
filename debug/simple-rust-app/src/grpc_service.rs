@@ -5,8 +5,7 @@ use crate::utils::print_if_debug;
 use tonic::{Request, Response, Status, Streaming};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
-use std::collections::BTreeMap;
-use prost_types::{Struct, Value};
+use tokio::time::{timeout, Duration};
 
 pub use super::envoy_service_ext_proc_v3;
 pub use crate::envoy_extensions_filters_http_ext_proc_v3::{ProcessingMode, HeaderSendMode, BodySendMode};
@@ -14,37 +13,15 @@ pub use crate::envoy_extensions_filters_http_ext_proc_v3::{ProcessingMode, Heade
 #[derive(Debug, Default)]
 pub struct MoesifGlooExtProcGrpcService;
 
-// Static "Continue" response
-fn static_response() -> envoy_service_ext_proc_v3::ProcessingResponse {
-    let common_response = envoy_service_ext_proc_v3::CommonResponse {
-        status: envoy_service_ext_proc_v3::common_response::ResponseStatus::Continue as i32,
-        ..Default::default()
-    };
-
+// Simplified "Continue" response to match the service on port 18080
+fn simplified_response() -> envoy_service_ext_proc_v3::ProcessingResponse {
     let headers_response = envoy_service_ext_proc_v3::HeadersResponse {
-        response: Some(common_response),
-    };
-
-    let metadata_map = {
-        let mut map = BTreeMap::new();
-        map.insert("static_key".to_string(), Value {
-            kind: Some(prost_types::value::Kind::StringValue("static_value".to_string())),
-        });
-        map
+        response: None, // No additional response fields
     };
 
     envoy_service_ext_proc_v3::ProcessingResponse {
-        dynamic_metadata: Some(Struct {
-            fields: metadata_map,
-        }),
-        mode_override: Some(ProcessingMode {
-            request_header_mode: HeaderSendMode::Send as i32,
-            response_header_mode: HeaderSendMode::Send as i32,
-            request_body_mode: BodySendMode::Buffered as i32,
-            response_body_mode: BodySendMode::Buffered as i32,
-            request_trailer_mode: HeaderSendMode::Send as i32,
-            response_trailer_mode: HeaderSendMode::Send as i32,
-        }),
+        dynamic_metadata: None, // No dynamic metadata
+        mode_override: None,    // No mode overrides
         override_message_timeout: None,
         response: Some(envoy_service_ext_proc_v3::processing_response::Response::RequestHeaders(headers_response)),
     }
@@ -60,17 +37,24 @@ impl envoy_service_ext_proc_v3::external_processor_server::ExternalProcessor for
     ) -> Result<Response<Self::ProcessStream>, Status> {
 
         let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let timeout_duration = Duration::from_secs(15); // Set your desired timeout here
 
-        // Stream the incoming messages (but ignore them since we return a static response)
-        while let Some(message) = request.get_mut().next().await {
+        // Stream the incoming messages with a timeout
+        while let Ok(Some(message)) = timeout(timeout_duration, request.get_mut().next()).await {
             match message {
-                Ok(_msg) => {
-                    // Log the received message if needed
-                    println!("Received gRPC message but sending static response.");
+                Ok(mut msg) => {
+                    // Log incoming headers for debugging
+                    if let Some(envoy_service_ext_proc_v3::processing_request::Request::RequestHeaders(ref headers)) = msg.request {
+                        print_if_debug("Client-to-Server Request Headers", Some(&headers.headers), None);
+                    }
 
-                    // Send the static response
-                    let response = static_response();
-                    println!("Sending static gRPC response: {:?}", response);
+                    if let Some(envoy_service_ext_proc_v3::processing_request::Request::ResponseHeaders(ref headers)) = msg.request {
+                        print_if_debug("Server-to-Client Response Headers", Some(&headers.headers), None);
+                    }
+
+                    // Send the simplified response
+                    let response = simplified_response();
+                    println!("Sending simplified gRPC response: {:?}", response);
 
                     if let Err(e) = tx.send(Ok(response)).await {
                         println!("Error sending response: {:?}", e);
@@ -84,8 +68,7 @@ impl envoy_service_ext_proc_v3::external_processor_server::ExternalProcessor for
             }
         }
 
-        // Return the static response stream
-        println!("Closing the stream after sending static responses");
+        // Return the simplified response stream
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
