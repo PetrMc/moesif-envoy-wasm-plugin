@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from the builder stage
-COPY --from=builder /usr/src/simple-rust-app/target/release/simple-rust-app /usr/local/bin/simple-rust-app
+COPY --from=builder /usr/src/simple-rust-app/target/release/moesif-exproc-plugin /usr/local/bin/moesif-exproc-plugin
 
 # Set the default command to run your application
-CMD ["simple-rust-app"]
+CMD ["moesif-exproc-plugin"]

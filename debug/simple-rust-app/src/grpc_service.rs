@@ -1,13 +1,12 @@
 #[path = "message_processor.rs"]
 mod message_processor;
 
-use crate::utils::print_if_debug;
+use message_processor::process_message;
 use tonic::{Request, Response, Status, Streaming};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 pub use super::envoy_service_ext_proc_v3;
-pub use crate::envoy_extensions_filters_http_ext_proc_v3::{ProcessingMode, HeaderSendMode, BodySendMode};
 
 #[derive(Debug, Default)]
 pub struct MoesifGlooExtProcGrpcService;
@@ -42,14 +41,8 @@ impl envoy_service_ext_proc_v3::external_processor_server::ExternalProcessor for
             while let Some(message) = request.get_mut().next().await {
                 match message {
                     Ok(mut msg) => {
-                        // Log incoming headers for debugging
-                        if let Some(envoy_service_ext_proc_v3::processing_request::Request::RequestHeaders(ref headers)) = msg.request {
-                            print_if_debug("Client-to-Server Request Headers", Some(&headers.headers), None);
-                        }
-
-                        if let Some(envoy_service_ext_proc_v3::processing_request::Request::ResponseHeaders(ref headers)) = msg.request {
-                            print_if_debug("Server-to-Client Response Headers", Some(&headers.headers), None);
-                        }
+                        // Use process_message to handle the message and log it
+                        process_message(&mut msg);
 
                         // Send the simplified response
                         let response = simplified_response();
