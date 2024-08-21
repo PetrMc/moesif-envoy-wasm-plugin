@@ -58,10 +58,9 @@ spec:
       requestHeaderMode: SEND
       responseHeaderMode: SKIP
 
- docker build -t simple-rust-app .
- docker images | grep simple
- docker tag simple-rust-app:latest mcallisterpetr/simple-rust-app:0.2.25
- docker push mcallisterpetr/simple-rust-app:0.2.25
+ docker build -t moesif-exproc-plugin .
+ docker tag moesif-exproc-plugin:latest mcallisterpetr/moesif-exproc-plugin:0.2.43
+ docker push mcallisterpetr/moesif-exproc-plugin:0.2.43
 
 RUSTFLAGS='-C target-feature=+crt-static' cargo build --release
 docker build -t server-exproc-plugin .

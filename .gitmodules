@@ -6,3 +6,5 @@
 [submodule "moesif-exproc/protoc-gen-validate"]
 	path = moesif-exproc/protoc-gen-validate
 	url = https://github.com/envoyproxy/protoc-gen-validate.git
+[submodule "moesif-exproc/xds"]
+	path = moesif-exproc/xds

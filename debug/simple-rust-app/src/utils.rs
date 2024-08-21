@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use chrono::Local;
+use reqwest::Client;
 
 /// Retrieve all environment variables and store them in a HashMap.
 pub fn retrieve_env_variables() -> HashMap<String, String> {
@@ -43,4 +44,30 @@ pub fn print_headers_if_debug(label: &str, headers: &[(String, Vec<u8>)]) {
             .collect();
         println!("{}", header_strs.join(", "));
     }
+}
+
+pub async fn send_to_moesif(base_uri: &str, api_key: &str, data: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new();
+    
+    // Log the JSON payload being sent
+    println!("Sending data to Moesif API: {}", serde_json::to_string_pretty(&data)?);
+
+    let response = client.post(base_uri)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(data)
+        .send()
+        .await?;
+    
+    // Log the HTTP status and response body
+    let status = response.status();
+    let response_body = response.text().await?;
+    println!("Received response from Moesif API: Status: {}, Body: {}", status, response_body);
+
+    if status.is_success() {
+        println!("Successfully sent data to Moesif API");
+    } else {
+        println!("Failed to send data to Moesif API: Status: {}, Body: {}", status, response_body);
+    }
+
+    Ok(())
 }
