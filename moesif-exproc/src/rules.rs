@@ -5,14 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use crate::event::{RequestInfo, ResponseInfo};
 
-// Represents the response from the governance rules API
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GovernanceRulesResponse {
     pub rules: Vec<GovernanceRule>,
     pub e_tag: Option<String>,
 }
 
-// Represents a single governance rule
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GovernanceRule {
     #[serde(rename = "_id")]
@@ -31,20 +29,17 @@ pub struct GovernanceRule {
     pub created_at: String,
 }
 
-// Represents a set of regex conditions that must all be true
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegexConditionsAnd {
     pub conditions: Vec<RegexCondition>,
 }
 
-// Represents a single regex condition
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegexCondition {
     pub path: String,
     pub value: String,
 }
 
-// Represents overrides to the HTTP response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseOverrides {
     pub body: Option<BodyTemplate>,
@@ -52,18 +47,14 @@ pub struct ResponseOverrides {
     pub status: i32,
 }
 
-// Represents a variable that can be used in templates
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Variable {
     pub name: String,
     pub path: String,
 }
 
-// Represents a template for an HTTP response body
 #[derive(Debug, Serialize)]
 pub struct BodyTemplate(pub String);
-
-// Visitor pattern implementation for deserializing a body template
 struct BodyTemplateVisitor;
 
 impl<'de> Visitor<'de> for BodyTemplateVisitor {
@@ -95,7 +86,6 @@ impl<'de> Deserialize<'de> for BodyTemplate {
     }
 }
 
-// Apply template variables to a string template
 pub fn template(t: &str, vars: &HashMap<String, String>) -> String {
     let mut s = t.to_owned();
     for (name, value) in vars {
@@ -104,14 +94,12 @@ pub fn template(t: &str, vars: &HashMap<String, String>) -> String {
     s
 }
 
-// Represents a rule template, which contains a governance rule and the associated variable values
 pub struct RuleTemplate {
     rule: GovernanceRule,
     values: HashMap<String, String>,
 }
 
 impl RuleTemplate {
-    // Create templated override values based on the rule
     fn template_override(&self) -> TemplatedOverrideValues {
         let mut headers = HashMap::new();
         for (k, v) in &self.rule.response.headers {
@@ -127,7 +115,6 @@ impl RuleTemplate {
     }
 }
 
-// Represents the values of a templated override
 pub struct TemplatedOverrideValues {
     block: bool,
     headers: HashMap<String, String>,
@@ -135,7 +122,6 @@ pub struct TemplatedOverrideValues {
     body: Option<Vec<u8>>,
 }
 
-// Represents an override to an HTTP response
 pub struct ResponseOverride {
     override_values: TemplatedOverrideValues,
     response: ResponseInfo,
@@ -144,7 +130,6 @@ pub struct ResponseOverride {
 }
 
 impl ResponseOverride {
-    // Create a new ResponseOverride from response info and templates
     fn new(response: ResponseInfo, templates: Vec<RuleTemplate>) -> Self {
         let mut override_values = TemplatedOverrideValues {
             block: false,
@@ -172,7 +157,6 @@ impl ResponseOverride {
     }
 }
 
-// Check if the request matches the regex conditions of a rule
 fn check_regex(rule: &GovernanceRule, req: &RequestInfo) -> bool {
     if rule.regex_config.is_empty() {
         return true;
@@ -184,15 +168,7 @@ fn check_regex(rule: &GovernanceRule, req: &RequestInfo) -> bool {
             match re {
                 Ok(re) => re.is_match(&s),
                 Err(_) => {
-                    eprintln!(
-                        "Governance rule regex error: org-app={}-{} rule.id={} rule.name={} path={} regex={}", 
-                        rule.org_id, 
-                        rule.app_id, 
-                        rule.id, 
-                        rule.name, 
-                        c.path, 
-                        c.value
-                    );
+                    eprintln!("Governance rule regex error: org-app={}-{} rule.id={} rule.name={} path={} regex={}", rule.org_id, rule.app_id, rule.id, rule.name, c.path, c.value);
                     false
                 }
             }
@@ -204,7 +180,6 @@ fn check_regex(rule: &GovernanceRule, req: &RequestInfo) -> bool {
     false
 }
 
-// Perform a lookup on the request path based on a specified path string
 fn request_path_lookup(req: &RequestInfo, path: &str) -> String {
     match path {
         "request.uri" => req.uri.clone(),
@@ -213,3 +188,4 @@ fn request_path_lookup(req: &RequestInfo, path: &str) -> String {
         _ => "".into(),
     }
 }
+

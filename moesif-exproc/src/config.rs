@@ -1,14 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// Configuration structure that holds environment and event queue settings
 #[derive(Default, Clone)]
 pub struct Config {
     pub env: EnvConfig,
     pub event_queue_id: u32,
 }
 
-// Environmental configuration with serialization and deserialization support
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct EnvConfig {
     pub moesif_application_id: String,
@@ -28,7 +26,6 @@ pub struct EnvConfig {
     pub connection_timeout: usize,
 }
 
-// Default values for various configurations
 fn default_batch_max_size() -> usize {
     100
 }
@@ -53,7 +50,6 @@ fn connection_timeout() -> usize {
     5000
 }
 
-// Represents the application's configuration response with serialization support
 #[derive(Default, Serialize, Deserialize, Debug)]
 pub struct AppConfigResponse {
     pub org_id: String,
@@ -71,7 +67,6 @@ pub struct AppConfigResponse {
 }
 
 impl AppConfigResponse {
-    // Creates a new default AppConfigResponse
     pub fn new() -> AppConfigResponse {
         AppConfigResponse {
             sample_rate: 100,
@@ -79,7 +74,6 @@ impl AppConfigResponse {
         }
     }
 
-    // Determines the sampling percentage based on user or company ID
     pub fn get_sampling_percentage(&self, user_id: Option<&str>, company_id: Option<&str>) -> i32 {
         if let Some(user_id) = user_id {
             if let Some(user_rate) = self.user_sample_rate.get(user_id) {
@@ -97,24 +91,20 @@ impl AppConfigResponse {
     }
 }
 
-// Represents the values of entity rules with serialization support
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct EntityRuleValues {
     pub rules: String,
     pub values: Option<HashMap<String, String>>,
 }
 
-// Represents a regex rule for configuration with serialization support
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct RegexRule {
     pub conditions: Vec<RegexCondition>,
     pub sample_rate: i32,
 }
 
-// Represents the conditions for regex rules with serialization support
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct RegexCondition {
     pub path: String,
     pub value: String,
 }
-

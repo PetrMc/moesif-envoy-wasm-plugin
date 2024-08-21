@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+
 use serde::{Serialize, Deserialize};
 
-// Struct to hold information about an HTTP request
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct RequestInfo {
     pub time: String,
@@ -14,7 +15,6 @@ pub struct RequestInfo {
     pub body: serde_json::Value,
 }
 
-// Struct to hold information about an HTTP response
 #[derive(Default, Serialize, Deserialize)]
 pub struct ResponseInfo {
     pub time: String,
@@ -24,7 +24,6 @@ pub struct ResponseInfo {
     pub body: serde_json::Value,
 }
 
-// Struct to represent an event, which includes request and response information
 #[derive(Default, Serialize, Deserialize)]
 pub struct Event {
     pub request: RequestInfo,
