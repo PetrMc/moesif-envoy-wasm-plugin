@@ -8,3 +8,4 @@
 	url = https://github.com/envoyproxy/protoc-gen-validate.git
 [submodule "moesif-exproc/xds"]
 	path = moesif-exproc/xds
+	url = https://github.com/cncf/xds.git 
