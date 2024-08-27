@@ -1,16 +1,30 @@
 use tonic::{Request, Response, Status, Streaming};
 use tokio_stream::wrappers::ReceiverStream;
 use envoy_ext_proc_proto::envoy::service::ext_proc::v3::{
-    external_processor_server::ExternalProcessor, ProcessingRequest, ProcessingResponse,
-    processing_request, processing_response, HeadersResponse,
+    external_processor_server::ExternalProcessor,
+    ProcessingRequest,
+    ProcessingResponse,
+    processing_request,
+    processing_response,
+    HeadersResponse,
+    CommonResponse,
+    HeaderMutation,
 };
 
+use envoy_ext_proc_proto::envoy::config::core::v3::{
+    HeaderMap,
+    HeaderValue as EnvoyHeaderValue,
+    HeaderValueOption,
+    header_value_option::HeaderAppendAction, 
+};
+
+
 use log::LevelFilter;
-use crate::config::{Config, EnvConfig};
-use envoy_ext_proc_proto::envoy::config::core::v3::HeaderMap;
+use uuid::Uuid;
+use crate::config::{Config};
 use reqwest::{Client, Method};
 use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue};
-use crate::http_callback::{get_header, HttpCallbackManager};
+use crate::http_callback::{get_header};
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -19,10 +33,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use bytes::Bytes;
 use chrono::Utc;
-use futures_util::{StreamExt, TryFutureExt};
+use futures_util::{StreamExt};
 use base64::Engine;
 use crate::event::{Event, ResponseInfo};
-use tokio::sync::{Mutex, TryLockError};
+use tokio::sync::{Mutex};
 
 #[derive(Default)]
 pub struct MoesifGlooExtProcGrpcService {
@@ -42,11 +56,34 @@ impl MoesifGlooExtProcGrpcService {
         // Initialize EventRootContext with the loaded configuration
         let root_context = EventRootContext::new(config.clone());
 
-        // Return the instance wrapped in Ok
-        Ok(MoesifGlooExtProcGrpcService {
+        // Create the service instance
+        let service = MoesifGlooExtProcGrpcService {
             config: Arc::new(config),
             event_context: Arc::new(Mutex::new(root_context)),
-        })
+        };
+
+        // Start periodic sending in the background
+        service.start_periodic_sending();
+
+        Ok(service)
+    }
+
+    fn start_periodic_sending(&self) {
+        let event_context = Arc::clone(&self.event_context);
+        let batch_max_wait = Duration::from_millis(self.config.env.batch_max_wait as u64);
+    
+        log::trace!("Starting periodic sending with batch_max_wait: {:?}", batch_max_wait);
+    
+        tokio::spawn(async move {
+            loop {
+                log::trace!("Waiting for batch_max_wait period: {:?}", batch_max_wait);
+                tokio::time::sleep(batch_max_wait).await;
+    
+                log::trace!("Periodic sending triggered...");
+                let mut event_context = event_context.lock().await;
+                event_context.drain_and_send(1).await;
+            }
+        });
     }
 }
 
@@ -71,13 +108,13 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
 
                             let mut event = Event::default();
                             event.request.time = Utc::now().to_rfc3339();
-                            log::info!("Generated request time: {}", event.request.time);
+                            log::trace!("Generated request time: {}", event.request.time);
 
                             // Handle request headers
                             if let Some(processing_request::Request::RequestHeaders(headers_msg)) =
                                 &msg.request
                             {
-                                log::info!("Processing request headers...");
+                                log::trace!("Processing request headers...");
 
                                 let headers = headers_msg.headers.as_ref();
                                 if headers.is_none() {
@@ -141,7 +178,7 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
                                 ),
                             ) = &msg.request
                             {
-                                log::info!("Processing response headers...");
+                                log::trace!("Processing response headers...");
                                 let status_str = response_headers_msg
                                     .headers
                                     .as_ref()
@@ -171,18 +208,19 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
                             log_event(&event);
 
                             // Add the event to the EventRootContext for batching and sending
-                            log::info!("Attempting to acquire lock on EventRootContext...");
+                            log::trace!("Attempting to acquire lock on EventRootContext...");
                             {
                                 let mut event_context = event_context.lock().await;
 
-                                log::info!("Lock acquired. Adding event to EventRootContext...");
+                                log::trace!("Lock acquired. Adding event to EventRootContext...");
                                 event_context.add_event(serialize_event_to_bytes(&event)).await;
-                                log::info!("Event added to EventRootContext.");
+                                log::trace!("Event added to EventRootContext.");
                             }
 
                             // Send the simplified response
-                            let response = simplified_response();
-                            log::info!("Attempting to send response...");
+                            // let response = simplified_response();
+                            let response = response_with_correlation_id();
+                            log::trace!("Attempting to send response...");
                             if let Err(e) = tx.send(Ok(response)).await {
                                 log::error!("Error sending response: {:?}", e);
                                 break;
@@ -292,6 +330,51 @@ fn simplified_response() -> ProcessingResponse {
     }
 }
 
+fn response_with_correlation_id() -> ProcessingResponse {
+    // Generate the correlation ID
+    let correlation_id = Uuid::new_v4().to_string(); // Generates a new UUID
+
+    // Create the EnvoyHeaderValue for the correlation ID
+    let correlation_header = EnvoyHeaderValue {
+        key: "X-Moesif-Gloo-ID".to_string(),
+        value: correlation_id,
+        raw_value: Bytes::new(),  // Empty as we're not using raw bytes
+    };
+
+    // Create a HeaderValueOption with the correlation ID header
+    let header_value_option = HeaderValueOption {
+        header: Some(correlation_header),
+        append: Some(false.into()), // Deprecated, but necessary in your version
+        append_action: HeaderAppendAction::AddIfAbsent.into(), // Only add if absent
+        keep_empty_value: false, // Remove the header if its value is empty
+    };
+
+    // Create the HeaderMutation with the HeaderValueOption
+    let header_mutation = HeaderMutation {
+        set_headers: vec![header_value_option],
+        remove_headers: vec![],  // No headers to remove
+    };
+
+    // Wrap the HeaderMutation in a CommonResponse
+    let common_response = CommonResponse {
+        header_mutation: Some(header_mutation),
+        ..Default::default()
+    };
+
+    // Construct the HeadersResponse
+    let headers_response = HeadersResponse {
+        response: Some(common_response),
+    };
+
+    // Construct and return the ProcessingResponse
+    ProcessingResponse {
+        dynamic_metadata: None,
+        mode_override: None,
+        override_message_timeout: None,
+        response: Some(processing_response::Response::RequestHeaders(headers_response)),
+    }
+}
+
 #[derive(Default)]
 pub struct EventRootContext {
     pub config: Config,
@@ -311,7 +394,7 @@ impl EventRootContext {
     }
 
     async fn write_events_json(&self, events: Vec<Bytes>) -> Bytes {
-        log::info!("Entering write_events_json with {} events.", events.len());
+        log::trace!("Entering write_events_json with {} events.", events.len());
 
         let total_size: usize = events.iter().map(|event_bytes| event_bytes.len()).sum();
 
@@ -335,32 +418,46 @@ impl EventRootContext {
 
         let final_json = std::str::from_utf8(&event_json_array).unwrap_or("Invalid UTF-8");
         log::info!("Final JSON array being sent: {}", final_json);
-        log::info!(
+        log::trace!(
             "Exiting write_events_json with JSON array size {} bytes.",
             event_json_array.len()
         );
         event_json_array.into() // Return as Bytes
     }
 
-    pub async fn add_event(&self, event_bytes: Bytes) {
-        log::info!("Entering add_event.");
+    pub async fn add_event(&mut self, event_bytes: Bytes) {
+        log::trace!("Entering add_event.");
+
+        let mut immediate_send = false;
 
         {
             let mut buffer = self.event_byte_buffer.lock().await;
-            log::info!(
+            log::trace!(
                 "Acquired lock on event_byte_buffer. Current buffer size: {}",
                 buffer.len()
             );
 
             buffer.push(event_bytes);
-            log::info!("Event added to buffer. New buffer size: {}", buffer.len());
+            log::trace!("Event added to buffer. New buffer size: {}", buffer.len());
+
+            if self.is_start {
+                // First event in the runtime, perform special action
+                immediate_send = true;
+                self.is_start = false; // Ensure this block only runs once
+                log::trace!("First event processed, setting is_start to false.");
+            } else if buffer.len() >= self.config.env.batch_max_size {
+                // Buffer full, send immediately
+                immediate_send = true;
+            }
         }
 
-        self.drain_and_send(2).await;
+        if immediate_send {
+            self.drain_and_send(1).await;
+        }
     }
 
     async fn drain_and_send(&self, drain_at_least: usize) {
-        log::info!(
+        log::trace!(
             "Entering drain_and_send with drain_at_least size: {}",
             drain_at_least
         );
@@ -369,21 +466,21 @@ impl EventRootContext {
         loop {
             match self.event_byte_buffer.try_lock() {
                 Ok(mut buffer) => {
-                    log::info!(
+                    log::trace!(
                         "Acquired lock on event_byte_buffer for draining after {} attempts. Current buffer size: {}",
                         attempts, buffer.len()
                     );
 
                     while buffer.len() >= drain_at_least {
-                        log::info!("Buffer size {} >= {}. Draining and sending events.", buffer.len(), drain_at_least);
+                        log::trace!("Buffer size {} >= {}. Draining and sending events.", buffer.len(), drain_at_least);
 
-                        log::info!("Config batch_max_size: {}", self.config.env.batch_max_size);
+                        log::trace!("Config batch_max_size: {}", self.config.env.batch_max_size);
                         let end = std::cmp::min(buffer.len(), self.config.env.batch_max_size);
-                        log::info!("Calculated end for draining: {}", end);
+                        log::trace!("Calculated end for draining: {}", end);
 
                         let events_to_send: Vec<Bytes> = buffer.drain(..end).collect();
-                        log::info!("Drained {} events from buffer for sending.", events_to_send.len());
-                        log::info!("Buffer size after draining: {}", buffer.len());
+                        log::trace!("Drained {} events from buffer for sending.", events_to_send.len());
+                        log::trace!("Buffer size after draining: {}", buffer.len());
 
                         let body = self.write_events_json(events_to_send).await;
 
@@ -402,13 +499,13 @@ impl EventRootContext {
                             log::error!("Failed to dispatch HTTP request: {:?}", e);
                         }
 
-                        log::info!("Events drained and sent. Current buffer size: {}", buffer.len());
+                        log::trace!("Events drained and sent. Current buffer size: {}", buffer.len());
                     }
 
-                    log::info!("Exiting drain_and_send. Current buffer size: {}", buffer.len());
+                    log::trace!("Exiting drain_and_send. Current buffer size: {}", buffer.len());
                     break;
                 }
-                Err(_) => {  // Handle the TryLockError generically
+                Err(_) => {  
                     attempts += 1;
                     log::warn!("Failed to acquire lock on event_byte_buffer; will retry after a short delay (attempt: {}).", attempts);
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -424,20 +521,20 @@ impl EventRootContext {
         body: Bytes,
         callback: Box<dyn Fn(Vec<(String, String)>, Option<Vec<u8>>) + Send>,
     ) -> Result<u32, Box<dyn std::error::Error + Send + Sync>> {
-        log::info!("Entering dispatch_http_request.");
+        log::trace!("Entering dispatch_http_request.");
 
         let client = Client::new();
         let url = format!("{}{}", self.config.env.base_uri, path);
 
         let method = Method::from_bytes(method.as_bytes())?;
-        log::info!("Using method: {} and URL: {}", method, url);
+        log::trace!("Using method: {} and URL: {}", method, url);
 
         let mut headers = ReqwestHeaderMap::new();
         headers.insert(HeaderName::from_static("content-type"), HeaderValue::from_static("application/json"));
         headers.insert(HeaderName::from_static("x-moesif-application-id"), HeaderValue::from_str(&self.config.env.moesif_application_id)?);
 
         let curl_cmd = generate_curl_command(method.as_str(), &url, &headers, Some(&body));
-        log::info!("Equivalent curl command:\n{}", curl_cmd);
+        log::trace!("Equivalent curl command:\n{}", curl_cmd);
 
         log::info!(
             "Dispatching {} request to {} with headers: {:?} and body: {}",
@@ -466,7 +563,7 @@ impl EventRootContext {
         // Call the provided callback with the headers and response body
         callback(headers, body.map(|b| b.to_vec()));
 
-        log::info!("Exiting dispatch_http_request.");
+        log::trace!("Exiting dispatch_http_request.");
 
         Ok(12345) // Replace with actual token or ID logic if needed
     }
