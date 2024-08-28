@@ -9,6 +9,7 @@ use envoy_ext_proc_proto::envoy::service::ext_proc::v3::{
     HeadersResponse,
     CommonResponse,
     HeaderMutation,
+    HttpHeaders,
 };
 
 use envoy_ext_proc_proto::envoy::config::core::v3::{
@@ -32,7 +33,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures_util::{StreamExt};
 use base64::Engine;
 use crate::event::{Event, ResponseInfo};
@@ -81,7 +82,12 @@ impl MoesifGlooExtProcGrpcService {
     
                 log::trace!("Periodic sending triggered...");
                 let mut event_context = event_context.lock().await;
+                
+                // Process and send events from the main buffer
                 event_context.drain_and_send(1).await;
+    
+                // Clean up and move stale events from the temporary buffer to the main buffer
+                event_context.cleanup_temporary_buffer(batch_max_wait).await;                
             }
         });
     }
@@ -100,9 +106,7 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
 
         // Clone the necessary Arcs and other data before moving into the async block
         let event_context = Arc::clone(&self.event_context);
-        let config = Arc::clone(&self.config);  
-        log::info!("USER_ID_HEADER: {:?}", std::env::var("USER_ID_HEADER"));
-        log::info!("COMPANY_ID_HEADER: {:?}", std::env::var("COMPANY_ID_HEADER"));
+        let config = Arc::clone(&self.config);
 
         tokio::spawn({
             let event_context = Arc::clone(&self.event_context);
@@ -118,202 +122,17 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
                             
                             let mut response_headers = HashMap::new();
 
-                            // Handle request headers
-                            if let Some(processing_request::Request::RequestHeaders(headers_msg)) =
-                                &msg.request
-                            {
-                                log::trace!("Processing request headers...");
-
-                                let headers = headers_msg.headers.as_ref();
-                                if headers.is_none() {
-                                    log::warn!("No headers found in request.");
-                                } else {
-                                    log::info!("Headers found: {:?}", headers);
-                                }
-
-                                event.direction = "Incoming".to_string();
-
-                                // Check each header
-                                event.request.headers =
-                                    header_list_to_map(headers.clone().cloned());
-                                log::info!("Parsed headers: {:?}", event.request.headers);
-
-                                event.request.uri = event
-                                    .request
-                                    .headers
-                                    .get(":path")
-                                    .unwrap_or(&"".into())
-                                    .clone();
-                                log::info!("Parsed URI: {}", event.request.uri);
-
-                                event.request.verb = event
-                                    .request
-                                    .headers
-                                    .get(":method")
-                                    .unwrap_or(&"GET".into())
-                                    .clone();
-                                log::info!("Parsed method: {}", event.request.verb);
-
-                                event.request.headers.retain(|k, _| !k.starts_with(":"));
-                                log::info!("Filtered headers: {:?}", event.request.headers);
-
-                                event.request.ip_address =
-                                    get_client_ip(&event.request.headers);
-                                log::info!("Client IP: {:?}", event.request.ip_address);
-
-                                event.request.api_version = event
-                                    .request
-                                    .headers
-                                    .get("x-api-version")
-                                    .cloned();
-                                log::info!("API Version: {:?}", event.request.api_version);
-
-                                event.request.transfer_encoding = event
-                                    .request
-                                    .headers
-                                    .get("transfer-encoding")
-                                    .cloned();
-                                log::info!(
-                                    "Transfer Encoding: {:?}",
-                                    event.request.transfer_encoding
-                                );
-
-                                // Generate a new UUID for moesif_gloo_id
-                                let moesif_gloo_id = Uuid::new_v4().to_string();
-
-                                // Check if the moesif_gloo_id exists and log a warning if it does
-                                if let Some(existing_id) = event
-                                    .request
-                                    .headers
-                                    .get("X-Moesif-Gloo-ID")
-                                    .cloned()
-                                {
-                                    log::warn!("Duplicate Moesif Gloo ID detected: {}. Generating a new ID.", existing_id);
-                                }
-
-                                event.moesif_gloo_id = moesif_gloo_id.clone();
-                                log::info!("Generated or retrieved Moesif Gloo ID: {}", event.moesif_gloo_id);
-
-                                // Add or update the ID in the request headers
-                                event.request.headers.insert("X-Moesif-Gloo-ID".to_string(), moesif_gloo_id.clone());
-
-                                // Collect headers for the response
-                                response_headers.insert("X-Moesif-Gloo-ID".to_string(), moesif_gloo_id.clone());
-
-
-                                // Add user_id and company_id from env variables if set
-                                if let Some(user_id_header) = &config.env.user_id_header {
-                                    // Check if the header exists in the incoming request
-                                    event.user_id = event.request.headers.get(user_id_header).cloned();
-                                    if event.user_id.is_none() {
-                                        log::warn!("User ID header '{}' not found in the request, setting default value.", user_id_header);
-                                        event.user_id = Some("default_user_id".to_string()); // Set a default value if the header is missing
-                                    }
-                                    event.request.headers.insert(user_id_header.clone(), event.user_id.clone().unwrap_or_default());
-                                    log::info!("Current Request Headers after adding User ID: {:?}", event.request.headers);
-                                    log::info!("Added User ID header from env variable: {}", user_id_header);
-
-                                    // Add to response headers
-                                    response_headers.insert(user_id_header.clone(), event.user_id.clone().unwrap_or_default());
-                                }
-                                
-                                if let Some(company_id_header) = &config.env.company_id_header {
-                                    // Check if the header exists in the incoming request
-                                    event.company_id = event.request.headers.get(company_id_header).cloned();
-                                    if event.company_id.is_none() {
-                                        log::warn!("Company ID header '{}' not found in the request, setting default value.", company_id_header);
-                                        event.company_id = Some("default_company_id".to_string()); // Set a default value if the header is missing
-                                    }
-                                    event.request.headers.insert(company_id_header.clone(), event.company_id.clone().unwrap_or_default());
-                                    log::info!("Current Request Headers after adding Company ID: {:?}", event.request.headers);
-                                    log::info!("Added Company ID header from env variable: {}", company_id_header);
-
-                                    // Add to response headers
-                                    response_headers.insert(company_id_header.clone(), event.company_id.clone().unwrap_or_default());
-                                }
-                                
-                                // After processing the request headers and before storing in noresponse_yet_events_buffer
-                                log_event(&event);
-
-                                // Store the request event in the noresponse_yet_events_buffer
-                                {
-                                    let mut ctx = event_context.lock().await;
-                                    ctx.store_event(moesif_gloo_id, event.clone()).await; // moesif_gloo_id can be moved now
-                                }
+                            if let Some(processing_request::Request::RequestHeaders(headers_msg)) = &msg.request {
+                                process_request_headers(&event_context, &config, &mut event, headers_msg, &mut response_headers).await;
                             }
 
-                            // Handle response headers
-                            if let Some(
-                                processing_request::Request::ResponseHeaders(
-                                    response_headers_msg,
-                                ),
-                            ) = &msg.request
-                            {
-                                log::trace!("Processing response headers...");
-                                let (status_str, moesif_gloo_id) = response_headers_msg
-                                    .headers
-                                    .as_ref()
-                                    .map(|header_map| {
-                                        let status = header_map
-                                            .headers
-                                            .iter()
-                                            .find(|header| header.key == ":status")
-                                            .map(|header| header.value.clone())
-                                            .unwrap_or_else(|| "0".to_string());
-                                
-                                        let moesif_id = header_map
-                                            .headers
-                                            .iter()
-                                            .find(|header| header.key == "X-Moesif-Gloo-ID")
-                                            .map(|header| header.value.clone())
-                                            .unwrap_or_default();
-                                
-                                        (status, moesif_id)
-                                    })
-                                    .unwrap_or_else(|| ("0".to_string(), String::new())); 
+                            if let Some(processing_request::Request::ResponseHeaders(response_headers_msg)) = &msg.request {
+                                process_response_headers(&event_context, response_headers_msg).await;
+                            }                            
 
-                                if moesif_gloo_id.is_empty() {
-                                    log::warn!("Moesif Gloo ID is empty in the response. Skipping matching.");
-                                } else {
-                                    log::info!(
-                                        "Matching response to request with Moesif Gloo ID: {} and status: {}",
-                                        moesif_gloo_id,
-                                        status_str
-                                    );
-                                
-                                    let mut response = ResponseInfo {
-                                        time: Utc::now().to_rfc3339(),
-                                        status: status_str.parse::<usize>().unwrap_or(0),
-                                        headers: header_list_to_map(response_headers_msg.headers.clone()),
-                                        ip_address: None,
-                                        body: serde_json::Value::Null,
-                                    };
-                                    response.headers.retain(|k, _| !k.starts_with(":"));
-                                
-                                    // Match and store the response using the extracted moesif_gloo_id
-                                    {
-                                        let mut ctx = event_context.lock().await;
-                                        let matched = ctx.match_and_store_response(moesif_gloo_id.clone(), response).await;
-                                        if matched {
-                                            log::info!("Response successfully matched with request.");
-                                        } else {
-                                            log::warn!("Failed to match response with any request.");
-                                        }
-                                    }
-                                }
-                            }    
-                            
-                            // Send the response to GRPC server
-                            let response = response_with_headers(response_headers);                            
-                            log::info!("Final Request Headers before sending: {:?}", event.request.headers);
-                            log::trace!("Attempting to send response...");
-                            if let Err(e) = tx.send(Ok(response)).await {
-                                log::error!("Error sending response: {:?}", e);
-                                break;
-                            } else {
-                                log::info!("Response sent successfully.");
-                            }
+                            send_grpc_response(tx.clone(), response_with_headers(response_headers)).await;
                         }
+
                         Err(e) => {
                             log::error!("Error receiving message: {:?}", e);
                             if tx.send(Err(Status::internal("Error processing request"))).await.is_err() {
@@ -332,6 +151,195 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
     }
 }
 
+// Handle request headers
+async fn process_request_headers(
+    event_context: &Arc<Mutex<EventRootContext>>,
+    config: &Arc<Config>,
+    event: &mut Event,
+    headers_msg: &HttpHeaders,
+    response_headers: &mut HashMap<String, String>,
+) {                                
+    log::trace!("Processing request headers...");
+
+    let headers = headers_msg.headers.as_ref();
+    if headers.is_none() {
+        log::warn!("No headers found in request.");
+    } else {
+        log::info!("Headers found: {:?}", headers);
+    }
+
+    event.direction = "Incoming".to_string();
+
+    // Check each header
+    event.request.headers = header_list_to_map(headers.clone().cloned());
+    log::info!("Parsed headers: {:?}", event.request.headers);
+
+    event.request.uri = event
+        .request
+        .headers
+        .get(":path")
+        .unwrap_or(&"".into())
+        .clone();
+    log::info!("Parsed URI: {}", event.request.uri);
+
+    event.request.verb = event
+        .request
+        .headers
+        .get(":method")
+        .unwrap_or(&"GET".into())
+        .clone();
+    log::info!("Parsed method: {}", event.request.verb);
+
+    event.request.headers.retain(|k, _| !k.starts_with(":"));
+    log::info!("Filtered headers: {:?}", event.request.headers);
+
+    event.request.ip_address =
+        get_client_ip(&event.request.headers);
+    log::info!("Client IP: {:?}", event.request.ip_address);
+
+    event.request.api_version = event
+        .request
+        .headers
+        .get("x-api-version")
+        .cloned();
+    log::info!("API Version: {:?}", event.request.api_version);
+
+    event.request.transfer_encoding = event
+        .request
+        .headers
+        .get("transfer-encoding")
+        .cloned();
+    log::info!(
+        "Transfer Encoding: {:?}",
+        event.request.transfer_encoding
+    );
+
+    let moesif_gloo_id = generate_moesif_gloo_id(&mut event.request.headers);
+    event.moesif_gloo_id = moesif_gloo_id.clone();
+    response_headers.insert("X-Moesif-Gloo-ID".to_string(), moesif_gloo_id);    
+                              
+    add_env_headers_to_event(&config, event, response_headers).await;
+
+    log_event(&event);
+    {
+        let ctx = event_context.lock().await;
+        ctx.store_event(event.moesif_gloo_id.clone(), event.clone()).await;
+    }
+}
+
+// Handle response headers
+async fn process_response_headers(
+    event_context: &Arc<Mutex<EventRootContext>>,
+    response_headers_msg: &HttpHeaders,
+) {
+    log::trace!("Processing response headers...");
+
+    let (status_str, moesif_gloo_id) = extract_status_and_id(response_headers_msg);
+
+
+    if moesif_gloo_id.is_empty() {
+        log::warn!("Moesif Gloo ID is empty in the response. Skipping matching.");
+    } else {
+        log::info!(
+            "Matching response to request with Moesif Gloo ID: {} and status: {}",
+            moesif_gloo_id,
+            status_str
+        );
+    
+        let response = ResponseInfo {
+            time: Utc::now().to_rfc3339(),
+            status: status_str.parse::<usize>().unwrap_or(0),
+            headers: header_list_to_map(response_headers_msg.headers.clone()),
+            ip_address: None,
+            body: serde_json::Value::Null,
+        };
+
+        match_and_store_response(&event_context, moesif_gloo_id, response).await;
+    }
+}                                
+
+async fn send_grpc_response(tx: tokio::sync::mpsc::Sender<Result<ProcessingResponse, Status>>, response: ProcessingResponse) {
+    log::trace!("Attempting to send response...");
+    if let Err(e) = tx.send(Ok(response)).await {
+        log::error!("Error sending response: {:?}", e);
+    } else {
+        log::info!("Response sent successfully.");
+    }
+}
+
+fn generate_moesif_gloo_id(headers: &mut HashMap<String, String>) -> String {
+    let moesif_gloo_id = Uuid::new_v4().to_string();
+
+    if let Some(existing_id) = headers.get("X-Moesif-Gloo-ID").cloned() {
+        log::warn!("Duplicate Moesif Gloo ID detected: {}. Generating a new ID.", existing_id);
+    }
+
+    headers.insert("X-Moesif-Gloo-ID".to_string(), moesif_gloo_id.clone());
+    log::info!("Generated or retrieved Moesif Gloo ID: {}", moesif_gloo_id);
+
+    moesif_gloo_id
+}
+
+async fn add_env_headers_to_event(
+    config: &Arc<Config>,
+    event: &mut Event,
+    response_headers: &mut HashMap<String, String>,
+) {
+    // Log the pre-loaded values from EnvConfig
+    log::trace!("Config USER_ID_HEADER: {:?}", config.env.user_id_header);
+    log::trace!("Config COMPANY_ID_HEADER: {:?}", config.env.company_id_header);
+
+    // Log the values directly from the environment
+    log::trace!("Env USER_ID_HEADER: {:?}", std::env::var("USER_ID_HEADER"));
+    log::trace!("Env COMPANY_ID_HEADER: {:?}", std::env::var("COMPANY_ID_HEADER"));
+
+    if let Some(user_id_header) = &config.env.user_id_header {
+        event.user_id = event.request.headers.get(user_id_header).cloned();
+        if event.user_id.is_none() {
+            log::trace!("User ID header '{}' not found in the request, setting default value.", user_id_header);
+            event.user_id = Some("default_user_id".to_string());
+        }
+        event.request.headers.insert(user_id_header.clone(), event.user_id.clone().unwrap_or_default());
+        response_headers.insert(user_id_header.clone(), event.user_id.clone().unwrap_or_default());
+    }
+
+    if let Some(company_id_header) = &config.env.company_id_header {
+        event.company_id = event.request.headers.get(company_id_header).cloned();
+        if event.company_id.is_none() {
+            log::trace!("Company ID header '{}' not found in the request, setting default value.", company_id_header);
+            event.company_id = Some("default_company_id".to_string());
+        }
+        event.request.headers.insert(company_id_header.clone(), event.company_id.clone().unwrap_or_default());
+        response_headers.insert(company_id_header.clone(), event.company_id.clone().unwrap_or_default());
+    }
+}
+
+async fn match_and_store_response(event_context: &Arc<Mutex<EventRootContext>>, moesif_gloo_id: String, response: ResponseInfo) {
+    let ctx = event_context.lock().await;
+    let matched = ctx.match_and_store_response(Some(moesif_gloo_id.clone()), response).await;
+    if matched {
+        log::info!("Response successfully matched with request.");
+    } else {
+        log::warn!("Failed to match response with any request.");
+    }
+}
+
+fn extract_status_and_id(headers_msg: &HttpHeaders) -> (String, String) {
+    
+    let status_str = headers_msg.headers.as_ref()
+        .and_then(|header_map| header_map.headers.iter()
+            .find(|header| header.key == ":status")
+            .map(|header| header.value.clone()))
+        .unwrap_or_else(|| "0".to_string());        
+
+    let moesif_gloo_id = headers_msg.headers.as_ref()
+        .and_then(|header_map| header_map.headers.iter()
+            .find(|header| header.key == "X-Moesif-Gloo-ID")
+            .map(|header| header.value.clone()))
+        .unwrap_or_default();
+
+    (status, moesif_gloo_id)
+}
 
 fn header_list_to_map(header_map: Option<HeaderMap>) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -552,6 +560,46 @@ impl EventRootContext {
         }
     }
 
+    /// Cleans up the temporary buffer by moving any events that have been waiting longer 
+    /// than `batch_max_wait` to the main buffer. These events are moved because they 
+    /// did not receive a response within the expected time frame and need to be processed.
+    pub async fn cleanup_temporary_buffer(&self, batch_max_wait: Duration) {
+        log::trace!("Starting cleanup of temporary buffer...");
+
+        let cutoff_time = Utc::now() - chrono::Duration::from_std(batch_max_wait).unwrap();
+
+        let mut temp_buffer = self.noresponse_yet_events_buffer.lock().await;
+        let mut main_buffer = self.event_byte_buffer.lock().await;
+
+        let mut events_to_move = vec![];
+
+        // Identify events older than `batch_max_wait` based on request or response time
+        for (key, event) in temp_buffer.iter() {
+            let request_time = event.request.time.parse::<DateTime<Utc>>().unwrap_or(Utc::now());
+            let response_time = event.response.as_ref().map_or(Utc::now(), |resp| {
+                resp.time.parse::<DateTime<Utc>>().unwrap_or(Utc::now())
+            });
+
+            // Move the event if either the request or response time is older than the cutoff
+            if request_time < cutoff_time || response_time < cutoff_time {
+                events_to_move.push(key.clone());
+            }
+        }
+
+        // Move identified events to the main buffer
+        for key in events_to_move {
+            if let Some(event) = temp_buffer.remove(&key) {
+                main_buffer.push(serialize_event_to_bytes(&event));
+                log::info!(
+                    "Moved event from temporary to main buffer with ID: {} because no response was matched within batch_max_wait time.",
+                    key
+                );
+            }
+        }
+
+        log::trace!("Cleanup of temporary buffer complete. Remaining events: {}", temp_buffer.len());
+    }
+
     async fn drain_and_send(&self, drain_at_least: usize) {
         log::trace!(
             "Entering drain_and_send with drain_at_least size: {}",
@@ -616,25 +664,37 @@ impl EventRootContext {
         log::info!("Stored request in noresponse_yet_events_buffer with ID: {}", moesif_gloo_id);
     }
 
-    pub async fn match_and_store_response(&self, moesif_gloo_id: String, response: ResponseInfo) -> bool {        
+    pub async fn match_and_store_response(&self, moesif_gloo_id: Option<String>, response: ResponseInfo) -> bool {
+        // If moesif_gloo_id is None or empty, create a new one
+        let moesif_gloo_id = moesif_gloo_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    
         let mut buffer = self.noresponse_yet_events_buffer.lock().await;
+    
+        // Attempt to find and remove the event with the matching ID
         if let Some(mut stored_event) = buffer.remove(&moesif_gloo_id) {
             stored_event.response = Some(response);
-            log::info!("Stitched response to request with ID: {}", moesif_gloo_id);
-
-            log_event(&stored_event);
-
-            let mut main_buffer = self.event_byte_buffer.lock().await;
-            main_buffer.push(serialize_event_to_bytes(&stored_event));
-            log::trace!("Event moved from noresponse_yet_events_buffer to event_byte_buffer with ID: {}", moesif_gloo_id);
-
-            return true; // Indicate that a match was found
+            self.process_event(moesif_gloo_id.clone(), stored_event).await;
+            true // Indicate that a match was found
         } else {
-            log::warn!("No matching request found for response with ID: {}", moesif_gloo_id);
-        
-            return false; // Indicate that no match was found
+            // No match found, create a new event with the response
+            let mut new_event = Event::default();
+            new_event.moesif_gloo_id = moesif_gloo_id.clone();
+            new_event.response = Some(response);
+            self.process_event(moesif_gloo_id, new_event).await;
+            false // Indicate that no match was found
         }
-    }    
+    }
+    
+    async fn process_event(&self, moesif_gloo_id: String, event: Event) {
+        log_event(&event);
+    
+        let mut main_buffer = self.event_byte_buffer.lock().await;
+        main_buffer.push(serialize_event_to_bytes(&event));
+        log::trace!(
+            "Event with ID: {} added to event_byte_buffer.",
+            moesif_gloo_id
+        );
+    }
 
     async fn dispatch_http_request(
         &self,
