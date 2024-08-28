@@ -7,7 +7,7 @@ pub struct Config {
     pub event_queue_id: u32,
 }
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct EnvConfig {
     pub moesif_application_id: String,
     pub user_id_header: Option<String>,
@@ -112,7 +112,6 @@ pub struct RegexCondition {
 
 impl EnvConfig {
     pub fn new() -> Self {
-        // Retrieve environment variables or use default values
         let moesif_application_id = env::var("MOESIF_APPLICATION_ID").unwrap_or_else(|_| String::new());
         let user_id_header = env::var("USER_ID_HEADER").ok();
         let company_id_header = env::var("COMPANY_ID_HEADER").ok();
@@ -132,7 +131,7 @@ impl EnvConfig {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or_else(connection_timeout);
 
-        EnvConfig {
+        let config = EnvConfig {
             moesif_application_id,
             user_id_header,
             company_id_header,
@@ -142,7 +141,11 @@ impl EnvConfig {
             base_uri,
             debug,
             connection_timeout,
-        }
+        };
+
+        log::info!("Config initialized: {:?}", config); // Add this line to print the entire config
+        
+        config
     }
 
     fn parse_upstream_url(upstream: &str) -> Result<String, ()> {
