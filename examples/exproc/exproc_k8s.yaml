@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: moesif-exproc-plugin
-          image: mcallisterpetr/moesif-exproc-plugin:0.2.43
+          image: mcallisterpetr/moesif-exproc-plugin:0.2.48
           imagePullPolicy: Always
           ports:
             - containerPort: 50051
@@ -24,15 +24,15 @@ spec:
             - name: MOESIF_APPLICATION_ID
               value: "eyJhcHAiOiI0OTM6MTI4NiIsInZlciI6IjIuMSIsIm9yZyI6IjU3Mzo1NzAiLCJpYXQiOjE3MjI0NzA0MDB9.Bg4CIwiKtLgcv0vfNK-B6ztAe2KuYRM7ThIAaDz1D9I"
             - name: USER_ID_HEADER
-              value: "X-User-Example-Header"  
+              value: "Solo Developer"  
             - name: COMPANY_ID_HEADER
-              value: "X-Company-Example-Header"  
+              value: "extproc cluster 1"  
             - name: UPSTREAM
               value: "outbound|443||api.moesif.net" 
             - name: DEBUG
               value: "true" 
             - name: RUST_LOG
-              value: debug
+              value: info
 
 ---
 apiVersion: v1

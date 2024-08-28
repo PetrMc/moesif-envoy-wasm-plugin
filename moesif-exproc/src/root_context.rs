@@ -169,6 +169,37 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
                                     "Transfer Encoding: {:?}",
                                     event.request.transfer_encoding
                                 );
+
+                                // Generate a new UUID for moesif_gloo_id
+                                let moesif_gloo_id = Uuid::new_v4().to_string();
+
+                                // Check if the moesif_gloo_id exists and log a warning if it does
+                                if let Some(existing_id) = event
+                                    .request
+                                    .headers
+                                    .get("X-Moesif-Gloo-ID")
+                                    .cloned()
+                                {
+                                    log::warn!("Duplicate Moesif Gloo ID detected: {}. Generating a new ID.", existing_id);
+                                }
+
+                                event.moesif_gloo_id = moesif_gloo_id.clone();
+                                log::info!("Generated or retrieved Moesif Gloo ID: {}", event.moesif_gloo_id);
+
+                                // Add or update the ID in the request headers
+                                event.request.headers.insert(
+                                    "X-Moesif-Gloo-ID".to_string(),
+                                    moesif_gloo_id.clone(), // Clone here to avoid moving it
+                                );
+
+                                // After processing the request headers and before storing in noresponse_yet_events_buffer
+                                log_event(&event);
+
+                                // Store the request event in the noresponse_yet_events_buffer
+                                {
+                                    let mut ctx = event_context.lock().await;
+                                    ctx.store_event(moesif_gloo_id, event.clone()).await; // moesif_gloo_id can be moved now
+                                }
                             }
 
                             // Handle response headers
@@ -201,25 +232,18 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
                                     body: serde_json::Value::Null,
                                 };
                                 response.headers.retain(|k, _| !k.starts_with(":"));
-                                event.response = Some(response);
+                                event.response = Some(response.clone()); // Clone here to avoid moving it
+
+                                // Match and store the response
+                                {
+                                    let mut ctx = event_context.lock().await;
+                                    ctx.match_and_store_response(event.moesif_gloo_id.clone(), response).await;
+                                }
                             }
 
-                            // Log the request and response
-                            log_event(&event);
+                            // Send the response to GRPC server
+                            let response = response_with_correlation_id(event.moesif_gloo_id.clone());
 
-                            // Add the event to the EventRootContext for batching and sending
-                            log::trace!("Attempting to acquire lock on EventRootContext...");
-                            {
-                                let mut event_context = event_context.lock().await;
-
-                                log::trace!("Lock acquired. Adding event to EventRootContext...");
-                                event_context.add_event(serialize_event_to_bytes(&event)).await;
-                                log::trace!("Event added to EventRootContext.");
-                            }
-
-                            // Send the simplified response
-                            // let response = simplified_response();
-                            let response = response_with_correlation_id();
                             log::trace!("Attempting to send response...");
                             if let Err(e) = tx.send(Ok(response)).await {
                                 log::error!("Error sending response: {:?}", e);
@@ -245,6 +269,7 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
+
 
 fn header_list_to_map(header_map: Option<HeaderMap>) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -330,23 +355,25 @@ fn simplified_response() -> ProcessingResponse {
     }
 }
 
-fn response_with_correlation_id() -> ProcessingResponse {
-    // Generate the correlation ID
-    let correlation_id = Uuid::new_v4().to_string(); // Generates a new UUID
+fn response_with_correlation_id(moesif_gloo_id: String) -> ProcessingResponse {
+    if moesif_gloo_id.is_empty() {
+        // If the moesif_gloo_id is empty, return a simplified response
+        return simplified_response();
+    }
 
     // Create the EnvoyHeaderValue for the correlation ID
     let correlation_header = EnvoyHeaderValue {
         key: "X-Moesif-Gloo-ID".to_string(),
-        value: correlation_id,
+        value: moesif_gloo_id.clone(),
         raw_value: Bytes::new(),  // Empty as we're not using raw bytes
     };
 
     // Create a HeaderValueOption with the correlation ID header
     let header_value_option = HeaderValueOption {
         header: Some(correlation_header),
-        append: Some(false.into()), // Deprecated, but necessary in your version
+        append: Some(false.into()), 
         append_action: HeaderAppendAction::AddIfAbsent.into(), // Only add if absent
-        keep_empty_value: false, // Remove the header if its value is empty
+        keep_empty_value: true, // Keep the header if its value is empty
     };
 
     // Create the HeaderMutation with the HeaderValueOption
@@ -378,7 +405,8 @@ fn response_with_correlation_id() -> ProcessingResponse {
 #[derive(Default)]
 pub struct EventRootContext {
     pub config: Config,
-    pub event_byte_buffer: Mutex<Vec<Bytes>>,
+    pub event_byte_buffer: Mutex<Vec<Bytes>>, // Holds serialized, complete events
+    pub noresponse_yet_events_buffer: Mutex<HashMap<String, Event>>, // Holds events waiting for a response
     context_id: String,
     is_start: bool,
 }
@@ -386,8 +414,9 @@ pub struct EventRootContext {
 impl EventRootContext {
     pub fn new(config: Config) -> Self {
         EventRootContext {
-            config, // No need for Arc if single-threaded or managed differently
+            config, 
             event_byte_buffer: Mutex::new(Vec::new()),
+            noresponse_yet_events_buffer: Mutex::new(HashMap::new()),
             context_id: String::new(),
             is_start: true,
         }
@@ -513,6 +542,28 @@ impl EventRootContext {
             }
         }
     }
+
+    pub async fn store_event(&self, moesif_gloo_id: String, event: Event) {
+        let mut buffer = self.noresponse_yet_events_buffer.lock().await;
+        buffer.insert(moesif_gloo_id.clone(), event);
+        log::info!("Stored request in noresponse_yet_events_buffer with ID: {}", moesif_gloo_id);
+    }
+
+    pub async fn match_and_store_response(&self, moesif_gloo_id: String, response: ResponseInfo) {
+        let mut buffer = self.noresponse_yet_events_buffer.lock().await;
+        if let Some(mut stored_event) = buffer.remove(&moesif_gloo_id) {
+            stored_event.response = Some(response);
+            log::info!("Stitched response to request with ID: {}", moesif_gloo_id);
+
+            log_event(&stored_event);
+
+            let mut main_buffer = self.event_byte_buffer.lock().await;
+            main_buffer.push(serialize_event_to_bytes(&stored_event));
+            log::trace!("Event moved from noresponse_yet_events_buffer to event_byte_buffer with ID: {}", moesif_gloo_id);
+        } else {
+            log::warn!("No matching request found for response with ID: {}", moesif_gloo_id);
+        }
+    }    
 
     async fn dispatch_http_request(
         &self,

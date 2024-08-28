@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub struct RequestInfo {
     pub time: String,
     pub verb: String,
@@ -15,7 +15,7 @@ pub struct RequestInfo {
     pub body: serde_json::Value,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub struct ResponseInfo {
     pub time: String,
     pub status: usize,
@@ -24,8 +24,9 @@ pub struct ResponseInfo {
     pub body: serde_json::Value,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Clone)]
 pub struct Event {
+    pub moesif_gloo_id: String,  // Unique ID for correlating the request and response
     pub request: RequestInfo,
     pub response: Option<ResponseInfo>,
     pub user_id: Option<String>,

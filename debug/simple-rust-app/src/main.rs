@@ -10,7 +10,7 @@ mod event;
 
 use utils::{retrieve_env_variables, print_if_debug};
 use tonic::transport::Server;
-use std::sync::Arc;
+
 use tokio::sync::Mutex;
 use crate::config::{Config, EnvConfig};
 use crate::root_context::EventRootContext; 

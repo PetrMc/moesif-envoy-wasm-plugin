@@ -37,6 +37,8 @@ helm install -n gloo-system gloo-gateway glooe/gloo-ee \
 --set gloo-fed.glooFedApiserver.enabled=false \
 --set gloo.gatewayProxies.gatewayProxy.disabled=true
 
+export INGRESS_GW_ADDRESS=$(kubectl get svc -n gloo-system gloo-proxy-http -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo $INGRESS_GW_ADDRESS
 kubectl get cm gloo-proxy-http -o json | jq -r '.data["envoy.yaml"]' | yq eval -P -
 curl -vik http://$INGRESS_GW_ADDRESS:8080/headers -H "host: moesif.example.com:8080"
 
@@ -58,9 +60,18 @@ spec:
       requestHeaderMode: SEND
       responseHeaderMode: SKIP
 
+
+RUST_LOG=info cargo run
+
+ cargo build --release
  docker build -t moesif-exproc-plugin .
- docker tag moesif-exproc-plugin:latest mcallisterpetr/moesif-exproc-plugin:0.2.43
- docker push mcallisterpetr/moesif-exproc-plugin:0.2.43
+ docker run -p 50051:50051 moesif-exproc-plugin:latest
+ docker ps 
+ docker stop
+
+
+ docker tag moesif-exproc-plugin:latest mcallisterpetr/moesif-exproc-plugin:0.2.48
+ docker push mcallisterpetr/moesif-exproc-plugin:0.2.48
 
 RUSTFLAGS='-C target-feature=+crt-static' cargo build --release
 docker build -t server-exproc-plugin .
@@ -93,9 +104,34 @@ eksctl create cluster --region $AWS_REGION \
  kubectl logs gloo-proxy-http-d5c8fb94f-8hkzk > /tmp/b.txt
 
  https://chatgpt.com/c/afaad267-dd6f-4ffa-9ee8-f32cf7229285
- 
- grpcurl -plaintext -import-path debug/simple-rust-app/proto \
+
+ grpcurl -plaintext \
+    -import-path moesif-exproc/data-plane-api/ \
+    -import-path moesif-exproc/udpa \
+    -import-path moesif-exproc/protoc-gen-validate \
     -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":authority",
+                  "value": "example.com"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":path",
+                  "value": "/test"
+                }
+              }
+            ]
+          }
+        }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+ 
+ grpcurl -plaintext -import-path moesif-exproc/data-plane-api/envoy/service/ext_proc/v3/ \
+    -proto external_processor.proto \
     -d '{
           "request_headers": {
             "headers": [
@@ -243,3 +279,9 @@ grpcurl -v -plaintext -import-path /tmp/proto  \
           }
         }' ext-proc-grpc:4444 envoy.service.ext_proc.v3.ExternalProcessor/Process
 
+export MOESIF_APPLICATION_ID="eyJhcHAiOiI0OTM6MTI4NiIsInZlciI6IjIuMSIsIm9yZyI6IjU3Mzo1NzAiLCJpYXQiOjE3MjI0NzA0MDB9.Bg4CIwiKtLgcv0vfNK-B6ztAe2KuYRM7ThIAaDz1D9I"
+export USER_ID_HEADER="X-User-Example-Header"
+export COMPANY_ID_HEADER="X-Company-Example-Header"
+export UPSTREAM="outbound|443||api.moesif.net"
+export DEBUG="true"
+export RUST_LOG="debug"
