@@ -233,6 +233,14 @@ async fn process_response_headers(
     response_headers_msg: &HttpHeaders,
 ) {
     log::trace!("Processing response headers...");
+    log::info!("Received Response Headers: {:?}", response_headers_msg);
+    if let Some(header_map) = &response_headers_msg.headers {
+        for header in &header_map.headers {
+            log::info!("Response Header Key: {}, Value: {}", header.key, header.value);
+        }
+    } else {
+        log::warn!("No headers found in response.");
+    }
 
     let (status_str, moesif_gloo_id) = extract_status_and_id(response_headers_msg);
 
@@ -325,6 +333,12 @@ async fn match_and_store_response(event_context: &Arc<Mutex<EventRootContext>>, 
 }
 
 fn extract_status_and_id(headers_msg: &HttpHeaders) -> (String, String) {
+
+    if let Some(header_map) = &headers_msg.headers {
+        for header in &header_map.headers {
+            log::info!("Header Key: {}, Value: {}", header.key, header.value);
+        }
+    }
     
     let status_str = headers_msg.headers.as_ref()
         .and_then(|header_map| header_map.headers.iter()
@@ -338,7 +352,7 @@ fn extract_status_and_id(headers_msg: &HttpHeaders) -> (String, String) {
             .map(|header| header.value.clone()))
         .unwrap_or_default();
 
-    (status, moesif_gloo_id)
+    (status_str, moesif_gloo_id)
 }
 
 fn header_list_to_map(header_map: Option<HeaderMap>) -> HashMap<String, String> {
