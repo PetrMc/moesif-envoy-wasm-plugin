@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Serialize, Deserialize};
-
+use serde::{Deserialize, Serialize};
 
 #[derive(Default, Serialize, Deserialize, Clone)]
 pub struct RequestInfo {
@@ -26,7 +25,7 @@ pub struct ResponseInfo {
 
 #[derive(Default, Serialize, Deserialize, Clone)]
 pub struct Event {
-    pub moesif_gloo_id: String,  // Unique ID for correlating the request and response
+    pub moesif_gloo_id: String, // Unique ID for correlating the request and response
     pub request: RequestInfo,
     pub response: Option<ResponseInfo>,
     pub user_id: Option<String>,

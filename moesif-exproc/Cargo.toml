@@ -1,6 +1,6 @@
 [package]
 name = "moesif_envoy_exproc_plugin"
-version = "0.0.3"
+version = "0.2.52"
 edition = "2021"
 
 [[bin]]
