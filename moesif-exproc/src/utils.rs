@@ -1,22 +1,18 @@
 use envoy_ext_proc_proto::envoy::service::ext_proc::v3::{
-    processing_response, CommonResponse, HeaderMutation, HeadersResponse, HttpHeaders,
-    ProcessingResponse,
+    processing_response, HeadersResponse, HttpHeaders, ProcessingResponse,
 };
 use tonic::Status;
 
-use envoy_ext_proc_proto::envoy::config::core::v3::{
-    header_value_option::HeaderAppendAction, HeaderMap, HeaderValue as EnvoyHeaderValue,
-    HeaderValueOption,
-};
+use envoy_ext_proc_proto::envoy::config::core::v3::HeaderMap;
 
 use crate::config::Config;
 use crate::root_context::EventRootContext;
 use reqwest::header::HeaderMap as ReqwestHeaderMap;
-use uuid::Uuid;
 
 use crate::event::{Event, ResponseInfo};
 use bytes::Bytes;
 use chrono::Utc;
+use log::LevelFilter;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -27,11 +23,9 @@ type Headers = Vec<(String, String)>;
 
 // Handle request headers
 pub async fn process_request_headers(
-    event_context: &Arc<Mutex<EventRootContext>>,
     config: &Arc<Config>,
     event: &mut Event,
     headers_msg: &HttpHeaders,
-    response_headers: &mut HashMap<String, String>,
 ) {
     log::trace!("Processing request headers...");
 
@@ -44,7 +38,7 @@ pub async fn process_request_headers(
 
     event.direction = "Incoming".to_string();
 
-    // Check each header
+    // Process and extract relevant headers
     event.request.headers = header_list_to_map(headers.cloned());
     log::info!("Parsed headers: {:?}", event.request.headers);
 
@@ -76,64 +70,49 @@ pub async fn process_request_headers(
     event.request.transfer_encoding = event.request.headers.get("transfer-encoding").cloned();
     log::info!("Transfer Encoding: {:?}", event.request.transfer_encoding);
 
-    let moesif_gloo_id = generate_moesif_gloo_id(&mut event.request.headers);
-    event.moesif_gloo_id = moesif_gloo_id.clone();
-    response_headers.insert("X-Moesif-Gloo-ID".to_string(), moesif_gloo_id);
-
-    add_env_headers_to_event(config, event, response_headers).await;
+    add_env_headers_to_event(config, event).await;
 
     log_event(event);
-    {
-        let ctx = event_context.lock().await;
-        ctx.store_event(event.moesif_gloo_id.clone(), event.clone())
-            .await;
-    }
 }
 
 // Handle response headers
-pub async fn process_response_headers(
-    event_context: &Arc<Mutex<EventRootContext>>,
-    response_headers_msg: &HttpHeaders,
-) {
+pub async fn process_response_headers(event: &mut Event, response_headers_msg: &HttpHeaders) {
     log::trace!("Processing response headers...");
-    log::info!("Received Response Headers: {:?}", response_headers_msg);
+    log::trace!("Received Response Headers: {:?}", response_headers_msg);
+
     if let Some(header_map) = &response_headers_msg.headers {
+        log::trace!("List of Headers in HTTP Response:");
+
         for header in &header_map.headers {
             log::info!(
-                "Response Header Key: {}, Value: {}",
+                "{} - {}",
                 header.key,
-                header.value
+                String::from_utf8_lossy(&header.raw_value)
             );
         }
     } else {
         log::warn!("No headers found in response.");
     }
 
-    let (status_str, moesif_gloo_id) = extract_status_and_id(response_headers_msg);
+    let status_str = extract_status(response_headers_msg);
 
-    if moesif_gloo_id.is_empty() {
-        log::warn!("Moesif Gloo ID is empty in the response. Skipping matching.");
-    } else {
-        log::info!(
-            "Matching response to request with Moesif Gloo ID: {} and status: {}",
-            moesif_gloo_id,
-            status_str
-        );
+    let response = ResponseInfo {
+        time: Utc::now().to_rfc3339(),
+        status: status_str.parse::<usize>().unwrap_or(0),
+        headers: header_list_to_map(response_headers_msg.headers.clone()),
+        ip_address: None,
+        body: serde_json::Value::Null,
+    };
 
-        let response = ResponseInfo {
-            time: Utc::now().to_rfc3339(),
-            status: status_str.parse::<usize>().unwrap_or(0),
-            headers: header_list_to_map(response_headers_msg.headers.clone()),
-            ip_address: None,
-            body: serde_json::Value::Null,
-        };
+    event.response = Some(response);
+}
 
-        match_and_store_response(event_context, moesif_gloo_id, response).await;
+// Store and flush event immediately
+pub async fn store_and_flush_event(event_context: &Arc<Mutex<EventRootContext>>, event: &Event) {
+    log_event(&event);
 
-        // Call the check_and_flush_buffer function to determine if the buffer needs to be flushed
-        let mut event_context = event_context.lock().await;
-        event_context.check_and_flush_buffer().await;
-    }
+    let mut main_buffer = event_context.lock().await;
+    main_buffer.push_event(event).await;
 }
 
 pub async fn send_grpc_response(
@@ -148,27 +127,7 @@ pub async fn send_grpc_response(
     }
 }
 
-pub fn generate_moesif_gloo_id(headers: &mut HashMap<String, String>) -> String {
-    let moesif_gloo_id = Uuid::new_v4().to_string();
-
-    if let Some(existing_id) = headers.get("X-Moesif-Gloo-ID").cloned() {
-        log::warn!(
-            "Duplicate Moesif Gloo ID detected: {}. Generating a new ID.",
-            existing_id
-        );
-    }
-
-    headers.insert("X-Moesif-Gloo-ID".to_string(), moesif_gloo_id.clone());
-    log::info!("Generated or retrieved Moesif Gloo ID: {}", moesif_gloo_id);
-
-    moesif_gloo_id
-}
-
-pub async fn add_env_headers_to_event(
-    config: &Arc<Config>,
-    event: &mut Event,
-    response_headers: &mut HashMap<String, String>,
-) {
+pub async fn add_env_headers_to_event(config: &Arc<Config>, event: &mut Event) {
     // Log the pre-loaded values from EnvConfig
     log::trace!("Config USER_ID_HEADER: {:?}", config.env.user_id_header);
     log::trace!(
@@ -184,64 +143,24 @@ pub async fn add_env_headers_to_event(
     );
 
     if let Some(user_id_header) = &config.env.user_id_header {
-        event.user_id = event.request.headers.get(user_id_header).cloned();
-        if event.user_id.is_none() {
-            log::trace!(
-                "User ID header '{}' not found in the request, setting default value.",
-                user_id_header
-            );
-            event.user_id = Some("default_user_id".to_string());
-        }
-        event.request.headers.insert(
-            .clone(),
-            event.user_id.clone().unwrap_or_default(),
-        );
-        response_headers.insert(
-            user_id_header.clone(),
-            event.user_id.clone().unwrap_or_default(),
-        );
+        event.user_id = Some(user_id_header.clone());
     }
 
     if let Some(company_id_header) = &config.env.company_id_header {
-        event.company_id = event.request.headers.get(company_id_header).cloned();
-        if event.company_id.is_none() {
-            log::trace!(
-                "Company ID header '{}' not found in the request, setting default value.",
-                company_id_header
-            );
-            event.company_id = Some("default_company_id".to_string());
-        }
-        event.request.headers.insert(
-            company_id_header.clone(),
-            event.company_id.clone().unwrap_or_default(),
-        );
-        response_headers.insert(
-            company_id_header.clone(),
-            event.company_id.clone().unwrap_or_default(),
-        );
+        event.company_id = Some(company_id_header.clone());
     }
 }
 
-pub async fn match_and_store_response(
-    event_context: &Arc<Mutex<EventRootContext>>,
-    moesif_gloo_id: String,
-    response: ResponseInfo,
-) {
-    let ctx = event_context.lock().await;
-    let matched = ctx
-        .match_and_store_response(Some(moesif_gloo_id.clone()), response)
-        .await;
-    if matched {
-        log::info!("Response successfully matched with request.");
-    } else {
-        log::warn!("Failed to match response with any request.");
-    }
-}
-
-pub fn extract_status_and_id(headers_msg: &HttpHeaders) -> (String, String) {
+pub fn extract_status(headers_msg: &HttpHeaders) -> String {
     if let Some(header_map) = &headers_msg.headers {
+        log::trace!("List of Significant Headers in HTTP Response:");
+
         for header in &header_map.headers {
-            log::info!("Header Key: {}, Value: {}", header.key, header.value);
+            log::trace!(
+                "{} - {}",
+                header.key,
+                String::from_utf8_lossy(&header.raw_value)
+            );
         }
     }
 
@@ -253,23 +172,13 @@ pub fn extract_status_and_id(headers_msg: &HttpHeaders) -> (String, String) {
                 .headers
                 .iter()
                 .find(|header| header.key == ":status")
-                .map(|header| header.value.clone())
+                .map(|header| String::from_utf8_lossy(&header.raw_value).to_string())
         })
         .unwrap_or_else(|| "0".to_string());
 
-    let moesif_gloo_id = headers_msg
-        .headers
-        .as_ref()
-        .and_then(|header_map| {
-            header_map
-                .headers
-                .iter()
-                .find(|header| header.key == "X-Moesif-Gloo-ID")
-                .map(|header| header.value.clone())
-        })
-        .unwrap_or_default();
+    log::trace!("Extracted status: {}", status_str);
 
-    (status_str, moesif_gloo_id)
+    status_str
 }
 
 pub fn header_list_to_map(header_map: Option<HeaderMap>) -> HashMap<String, String> {
@@ -278,7 +187,7 @@ pub fn header_list_to_map(header_map: Option<HeaderMap>) -> HashMap<String, Stri
     if let Some(header_map) = header_map {
         for header in header_map.headers {
             let key = header.key.to_lowercase();
-            let value = header.value.clone();
+            let value = String::from_utf8_lossy(&header.raw_value).to_string(); // Convert raw_value to String
             map.insert(key, value);
         }
     }
@@ -337,60 +246,6 @@ pub fn simplified_response() -> ProcessingResponse {
     }
 }
 
-pub fn response_with_headers(headers: HashMap<String, String>) -> ProcessingResponse {
-    if headers.is_empty() {
-        // If the moesif_gloo_id is empty, return a simplified response
-        return simplified_response();
-    }
-
-    // Create a list of HeaderValueOption for each header in the HashMap
-    let mut header_options = Vec::new();
-
-    for (key, value) in headers {
-        let envoy_header = EnvoyHeaderValue {
-            key,
-            value,
-            raw_value: Bytes::new(), // Empty as we're not using raw bytes
-        };
-
-        let header_value_option = HeaderValueOption {
-            header: Some(envoy_header),
-            append: Some(false), // Deprecated but required for current Envoy compatibility.
-            append_action: HeaderAppendAction::AddIfAbsent.into(), // Only add if absent
-            keep_empty_value: true, // Keep the header if its value is empty
-        };
-
-        header_options.push(header_value_option);
-    }
-
-    // Create the HeaderMutation with the list of HeaderValueOption
-    let header_mutation = HeaderMutation {
-        set_headers: header_options,
-        remove_headers: vec![], // No headers to remove
-    };
-
-    // Wrap the HeaderMutation in a CommonResponse
-    let common_response = CommonResponse {
-        header_mutation: Some(header_mutation),
-        ..Default::default()
-    };
-
-    // Construct the HeadersResponse
-    let headers_response = HeadersResponse {
-        response: Some(common_response),
-    };
-
-    // Construct and return the ProcessingResponse
-    ProcessingResponse {
-        dynamic_metadata: None,
-        mode_override: None,
-        override_message_timeout: None,
-        response: Some(processing_response::Response::RequestHeaders(
-            headers_response,
-        )),
-    }
-}
-
 pub fn generate_curl_command(
     method: &str,
     url: &str,
@@ -421,14 +276,40 @@ pub fn get_header(headers: &Headers, name: &str) -> Option<String> {
         .map(|(_, header_value)| header_value.to_owned())
 }
 
-// Print the current log level
-pub fn display_log_level() {
+pub fn set_and_display_log_level(config: &Config) {
+    // Check if RUST_LOG is set
+    if let Some(rust_log) = &config.env.rust_log {
+        match rust_log.to_lowercase().as_str() {
+            "trace" => log::set_max_level(LevelFilter::Trace),
+            "debug" => log::set_max_level(LevelFilter::Debug),
+            "info" => log::set_max_level(LevelFilter::Info),
+            "warn" => log::set_max_level(LevelFilter::Warn),
+            "error" => log::set_max_level(LevelFilter::Error),
+            _ => {
+                // If RUST_LOG is set to an invalid value, fall back to default logic
+                set_level_based_on_debug(config);
+            }
+        }
+    } else {
+        // If RUST_LOG is not set, use the DEBUG environment variable logic
+        set_level_based_on_debug(config);
+    }
+
+    // Display the current log level
     match log::max_level() {
-        log::LevelFilter::Error => println!("Logging level set to: ERROR"),
-        log::LevelFilter::Warn => println!("Logging level set to: WARN"),
-        log::LevelFilter::Info => println!("Logging level set to: INFO"),
-        log::LevelFilter::Debug => println!("Logging level set to: DEBUG"),
-        log::LevelFilter::Trace => println!("Logging level set to: TRACE"),
-        log::LevelFilter::Off => println!("Logging is turned OFF"),
+        LevelFilter::Error => println!("Logging level set to: ERROR"),
+        LevelFilter::Warn => println!("Logging level set to: WARN"),
+        LevelFilter::Info => println!("Logging level set to: INFO"),
+        LevelFilter::Debug => println!("Logging level set to: DEBUG"),
+        LevelFilter::Trace => println!("Logging level set to: TRACE"),
+        LevelFilter::Off => println!("Logging is turned OFF"),
+    }
+}
+
+fn set_level_based_on_debug(config: &Config) {
+    if config.env.debug {
+        log::set_max_level(LevelFilter::Debug);
+    } else {
+        log::set_max_level(LevelFilter::Warn);
     }
 }

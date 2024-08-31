@@ -5,18 +5,16 @@ use envoy_ext_proc_proto::envoy::service::ext_proc::v3::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::config::Config;
-use crate::root_context::EventRootContext;
-use crate::utils::*;
-use log::LevelFilter;
-
-use crate::event::Event;
 use chrono::Utc;
 use futures_util::StreamExt;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+
+use crate::config::Config;
+use crate::event::Event;
+use crate::root_context::EventRootContext;
+use crate::utils::*;
 
 #[derive(Default)]
 pub struct MoesifGlooExtProcGrpcService {
@@ -26,12 +24,8 @@ pub struct MoesifGlooExtProcGrpcService {
 
 impl MoesifGlooExtProcGrpcService {
     pub fn new(config: Config) -> Result<Self, String> {
-        // Set the log level based on the config
-        if config.env.debug {
-            log::set_max_level(LevelFilter::Debug);
-        } else {
-            log::set_max_level(LevelFilter::Warn);
-        }
+        // Set and display the log level based on the config and environment variables
+        set_and_display_log_level(&config);
 
         // Initialize EventRootContext with the loaded configuration
         let root_context = EventRootContext::new(config.clone());
@@ -92,47 +86,50 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
         let (tx, rx) = tokio::sync::mpsc::channel(32);
 
         let config = Arc::clone(&self.config);
+        let mut request_headers_received = false;
 
         tokio::spawn({
             let event_context = Arc::clone(&self.event_context);
             async move {
+                let mut event = Event::default(); // Event associated with this channel
+
                 while let Some(message) = request.get_mut().next().await {
                     match message {
                         Ok(msg) => {
                             log::info!("Received message: {:?}", msg);
 
-                            let mut event = Event::default();
-                            event.request.time = Utc::now().to_rfc3339();
-                            log::trace!("Generated request time: {}", event.request.time);
-
-                            let mut response_headers = HashMap::new();
-
                             if let Some(processing_request::Request::RequestHeaders(headers_msg)) =
                                 &msg.request
                             {
-                                process_request_headers(
-                                    &event_context,
-                                    &config,
-                                    &mut event,
-                                    headers_msg,
-                                    &mut response_headers,
-                                )
-                                .await;
+                                log::trace!("Processing request headers...");
+                                request_headers_received = true;
+                                event.request.time = Utc::now().to_rfc3339();
+                                log::trace!("Generated request time: {}", event.request.time);
+
+                                process_request_headers(&config, &mut event, headers_msg).await;
                             }
 
                             if let Some(processing_request::Request::ResponseHeaders(
                                 response_headers_msg,
                             )) = &msg.request
                             {
-                                process_response_headers(&event_context, response_headers_msg)
-                                    .await;
+                                log::trace!("Processing response headers...");
+                                process_response_headers(&mut event, response_headers_msg).await;
+
+                                if request_headers_received {
+                                    log::trace!(
+                                        "Storing event after matching request and response."
+                                    );
+                                } else {
+                                    log::warn!(
+                                        "Received response without a corresponding request. Storing unmatched response."
+                                    );
+                                }
+                                store_and_flush_event(&event_context, &event).await;
                             }
-                            log::info!(
-                                "Sending gRPC response with headers: {:?}",
-                                response_headers
-                            );
-                            send_grpc_response(tx.clone(), response_with_headers(response_headers))
-                                .await;
+
+                            log::trace!("Sending simplified gRPC response with no headers");
+                            send_grpc_response(tx.clone(), simplified_response()).await;
                         }
 
                         Err(e) => {
@@ -147,6 +144,14 @@ impl ExternalProcessor for MoesifGlooExtProcGrpcService {
                             }
                         }
                     }
+                }
+
+                // Final processing when the gRPC stream closes
+                if !request_headers_received {
+                    log::warn!(
+                        "Channel closed before receiving a matching request/response. Storing unmatched event."
+                    );
+                    store_and_flush_event(&event_context, &event).await;
                 }
                 log::info!("Stream processing complete.");
             }

@@ -8,7 +8,6 @@ use crate::config::{Config, EnvConfig};
 use crate::grpc_service::MoesifGlooExtProcGrpcService;
 use envoy_ext_proc_proto::envoy::service::ext_proc::v3::external_processor_server::ExternalProcessorServer as ProcessorServer;
 use tonic::transport::Server;
-use utils::display_log_level;
 
 async fn async_main(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let addr = "0.0.0.0:50051".parse()?;
@@ -34,9 +33,6 @@ async fn async_main(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-
-    // Call the function with parentheses
-    display_log_level();
 
     // Initialize configuration
     let env_config = EnvConfig::new();

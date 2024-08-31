@@ -23,6 +23,7 @@ pub struct EnvConfig {
     pub debug: bool,
     #[serde(default = "connection_timeout")]
     pub connection_timeout: usize,
+    pub rust_log: Option<String>,
 }
 
 fn default_batch_max_size() -> usize {
@@ -103,6 +104,8 @@ impl EnvConfig {
         let debug = env::var("DEBUG")
             .ok()
             .map_or_else(default_debug, |v| v == "true");
+
+        let rust_log = env::var("RUST_LOG").ok();
         let connection_timeout = env::var("CONNECTION_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -118,6 +121,7 @@ impl EnvConfig {
             base_uri,
             debug,
             connection_timeout,
+            rust_log,
         };
 
         log::info!("Config initialized: {:?}", config); // Add this line to print the entire config

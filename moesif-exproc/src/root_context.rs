@@ -2,9 +2,8 @@ use crate::config::Config;
 use crate::utils::*;
 use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Method};
-use uuid::Uuid;
 
-use crate::event::{Event, ResponseInfo};
+use crate::event::Event;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -222,53 +221,10 @@ impl EventRootContext {
         }
     }
 
-    pub async fn store_event(&self, moesif_gloo_id: String, event: Event) {
-        let mut buffer = self.noresponse_yet_events_buffer.lock().await;
-        buffer.insert(moesif_gloo_id.clone(), event);
-        log::info!(
-            "Stored request in noresponse_yet_events_buffer with ID: {}",
-            moesif_gloo_id
-        );
-    }
-
-    pub async fn match_and_store_response(
-        &self,
-        moesif_gloo_id: Option<String>,
-        response: ResponseInfo,
-    ) -> bool {
-        // If moesif_gloo_id is None or empty, create a new one
-        let moesif_gloo_id = moesif_gloo_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-
-        let mut buffer = self.noresponse_yet_events_buffer.lock().await;
-
-        // Attempt to find and remove the event with the matching ID
-        if let Some(mut stored_event) = buffer.remove(&moesif_gloo_id) {
-            stored_event.response = Some(response);
-            self.process_event(moesif_gloo_id.clone(), stored_event)
-                .await;
-            true // Indicate that a match was found
-        } else {
-            // No match found, create a new event with the response
-            let new_event = Event {
-                moesif_gloo_id: moesif_gloo_id.clone(),
-                response: Some(response),
-                ..Default::default()
-            };
-
-            self.process_event(moesif_gloo_id, new_event).await;
-            false // Indicate that no match was found
-        }
-    }
-
-    async fn process_event(&self, moesif_gloo_id: String, event: Event) {
-        log_event(&event);
-
-        let mut main_buffer = self.event_byte_buffer.lock().await;
-        main_buffer.push(serialize_event_to_bytes(&event));
-        log::trace!(
-            "Event with ID: {} added to event_byte_buffer.",
-            moesif_gloo_id
-        );
+    pub async fn push_event(&mut self, event: &Event) {
+        let mut buffer = self.event_byte_buffer.lock().await;
+        buffer.push(serialize_event_to_bytes(&event));
+        log::info!("Event pushed to event_byte_buffer.");
     }
 
     async fn dispatch_http_request(
