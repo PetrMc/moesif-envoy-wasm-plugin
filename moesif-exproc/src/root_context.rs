@@ -5,8 +5,6 @@ use reqwest::{Client, Method};
 
 use crate::event::Event;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -16,7 +14,6 @@ type CallbackType = Box<dyn Fn(Vec<(String, String)>, Option<Vec<u8>>) + Send>;
 pub struct EventRootContext {
     pub config: Config,
     pub event_byte_buffer: Mutex<Vec<Bytes>>, // Holds serialized, complete events
-    pub noresponse_yet_events_buffer: Mutex<HashMap<String, Event>>, // Holds events waiting for a response
     // context_id: String,
     is_start: bool,
 }
@@ -26,7 +23,6 @@ impl EventRootContext {
         EventRootContext {
             config,
             event_byte_buffer: Mutex::new(Vec::new()),
-            noresponse_yet_events_buffer: Mutex::new(HashMap::new()),
             // context_id: String::new(),
             is_start: true,
         }
@@ -94,53 +90,6 @@ impl EventRootContext {
         if immediate_send {
             self.drain_and_send(1).await;
         }
-    }
-
-    /// Cleans up the temporary buffer by moving any events that have been waiting longer
-    /// than `batch_max_wait` to the main buffer. These events are moved because they
-    /// did not receive a response within the expected time frame and need to be processed.
-    pub async fn cleanup_temporary_buffer(&self, batch_max_wait: Duration) {
-        log::trace!("Starting cleanup of temporary buffer...");
-
-        let cutoff_time = Utc::now() - chrono::Duration::from_std(batch_max_wait).unwrap();
-
-        let mut temp_buffer = self.noresponse_yet_events_buffer.lock().await;
-        let mut main_buffer = self.event_byte_buffer.lock().await;
-
-        let mut events_to_move = vec![];
-
-        // Identify events older than `batch_max_wait` based on request or response time
-        for (key, event) in temp_buffer.iter() {
-            let request_time = event
-                .request
-                .time
-                .parse::<DateTime<Utc>>()
-                .unwrap_or(Utc::now());
-            let response_time = event.response.as_ref().map_or(Utc::now(), |resp| {
-                resp.time.parse::<DateTime<Utc>>().unwrap_or(Utc::now())
-            });
-
-            // Move the event if either the request or response time is older than the cutoff
-            if request_time < cutoff_time || response_time < cutoff_time {
-                events_to_move.push(key.clone());
-            }
-        }
-
-        // Move identified events to the main buffer
-        for key in events_to_move {
-            if let Some(event) = temp_buffer.remove(&key) {
-                main_buffer.push(serialize_event_to_bytes(&event));
-                log::info!(
-                    "Moved event from temporary to main buffer with ID: {} because no response was matched within batch_max_wait time.",
-                    key
-                );
-            }
-        }
-
-        log::trace!(
-            "Cleanup of temporary buffer complete. Remaining events: {}",
-            temp_buffer.len()
-        );
     }
 
     pub async fn drain_and_send(&self, drain_at_least: usize) {
@@ -223,7 +172,7 @@ impl EventRootContext {
 
     pub async fn push_event(&mut self, event: &Event) {
         let mut buffer = self.event_byte_buffer.lock().await;
-        buffer.push(serialize_event_to_bytes(&event));
+        buffer.push(serialize_event_to_bytes(event));
         log::info!("Event pushed to event_byte_buffer.");
     }
 

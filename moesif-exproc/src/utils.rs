@@ -107,12 +107,16 @@ pub async fn process_response_headers(event: &mut Event, response_headers_msg: &
     event.response = Some(response);
 }
 
-// Store and flush event immediately
 pub async fn store_and_flush_event(event_context: &Arc<Mutex<EventRootContext>>, event: &Event) {
-    log_event(&event);
+    log_event(event);
 
-    let mut main_buffer = event_context.lock().await;
-    main_buffer.push_event(event).await;
+    let mut event_root_context = event_context.lock().await;
+
+    // Add the event to the main buffer
+    event_root_context.push_event(event).await;
+
+    // Check if we need to flush the buffer
+    event_root_context.check_and_flush_buffer().await;
 }
 
 pub async fn send_grpc_response(

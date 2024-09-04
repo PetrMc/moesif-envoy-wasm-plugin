@@ -65,9 +65,6 @@ impl MoesifGlooExtProcGrpcService {
                 log::trace!("Draining and sending events from the main buffer...");
                 event_context.drain_and_send(1).await;
 
-                log::trace!("Cleaning up and moving stale events from the temporary buffer...");
-                event_context.cleanup_temporary_buffer(batch_max_wait).await;
-
                 log::trace!("Periodic sending cycle complete.");
             }
         });

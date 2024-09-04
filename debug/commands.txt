@@ -61,17 +61,26 @@ spec:
       responseHeaderMode: SKIP
 
 
+cargo +nightly udeps
+cargo fmt
+cargo clippy
 RUST_LOG=info cargo run
 
  cargo build --release
  docker build -t moesif-exproc-plugin .
  docker run -p 50051:50051 moesif-exproc-plugin:latest
+ docker run -it -p 50051:50051 --env-file /home/petr/github.com/Moesif/moesif-envoy-wasm-plugin/debug/moesif-exproc-plugin:.env moesif-exproc-plugin:latest
+
  docker ps 
  docker stop
 
 
- docker tag moesif-exproc-plugin:latest mcallisterpetr/moesif-exproc-plugin:0.2.48
- docker push mcallisterpetr/moesif-exproc-plugin:0.2.48
+ docker tag moesif-exproc-plugin:latest mcallisterpetr/moesif-exproc-plugin:0.3.1
+ docker tag moesif-exproc-plugin:latest gcr.io/solo-test-236622/moesif-exproc-plugin:0.3.1
+ docker tag gcr.io/solo-test-236622/moesif-exproc-plugin:0.3.1 gcr.io/solo-test-236622/moesif-exproc-plugin:latest
+ docker push gcr.io/solo-test-236622/moesif-exproc-plugin:latest
+ docker push mcallisterpetr/moesif-exproc-plugin:0.3.1
+ docker push gcr.io/solo-test-236622/moesif-exproc-plugin:0.3.1
 
 RUSTFLAGS='-C target-feature=+crt-static' cargo build --release
 docker build -t server-exproc-plugin .
@@ -285,3 +294,186 @@ export COMPANY_ID_HEADER="X-Company-Example-Header"
 export UPSTREAM="outbound|443||api.moesif.net"
 export DEBUG="true"
 export RUST_LOG="debug"
+cd /home/petr/github.com/Moesif/moesif-envoy-wasm-plugin
+
+grpcurl -plaintext     -import-path moesif-exproc/data-plane-api/     -import-path moesif-exproc/udpa     -import-path moesif-exproc/protoc-gen-validate     -proto envoy/service/ext_proc/v3/external_processor.proto     -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":authority",
+                  "value": "example.com"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":path",
+                  "value": "/test"
+                }
+              }
+            ]
+          }
+        }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+grpcurl -plaintext     -import-path moesif-exproc/data-plane-api/     -import-path moesif-exproc/udpa     -import-path moesif-exproc/protoc-gen-validate     -proto envoy/service/ext_proc/v3/external_processor.proto     -d '{
+          "response_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":status",
+                  "value": "200"
+                }
+              } 
+            ]
+          }                 
+        }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+#!/bin/bash
+
+for i in {1..4}
+do
+  grpcurl -plaintext \
+    -import-path moesif-exproc/data-plane-api/ \
+    -import-path moesif-exproc/udpa \
+    -import-path moesif-exproc/protoc-gen-validate \
+    -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "request_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":authority",
+                  "value": "example.com"
+                }
+              },
+              {
+                "headers": {
+                  "key": ":path",
+                  "value": "/test"
+                }
+              }
+            ]
+          }
+        }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+  grpcurl -plaintext \
+    -import-path moesif-exproc/data-plane-api/ \
+    -import-path moesif-exproc/udpa \
+    -import-path moesif-exproc/protoc-gen-validate \
+    -proto envoy/service/ext_proc/v3/external_processor.proto \
+    -d '{
+          "response_headers": {
+            "headers": [
+              {
+                "headers": {
+                  "key": ":status",
+                  "value": "200"
+                }
+              } 
+            ]
+          }                 
+        }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process
+
+done
+
+echo "100 events pushed in less than 2 seconds."
+
+
+for i in {1..4}
+do
+  MOESIF_GLOO_ID=$(grpcurl -plaintext \
+      -import-path moesif-exproc/data-plane-api/ \
+      -import-path moesif-exproc/udpa \
+      -import-path moesif-exproc/protoc-gen-validate \
+      -proto envoy/service/ext_proc/v3/external_processor.proto \
+      -d '{
+            "request_headers": {
+              "headers": [
+                {
+                  "headers": {
+                    "key": ":authority",
+                    "value": "example.com"
+                  }
+                },
+                {
+                  "headers": {
+                    "key": ":path",
+                    "value": "/test"
+                  }
+                }
+              ]
+            }
+            
+          }' localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process | jq -r '.requestHeaders.response.headerMutation.setHeaders[] | select(.header.key == "X-Moesif-Gloo-ID") | .header.value')
+  RESPONSE_JSON=$(jq -n --arg id "$MOESIF_GLOO_ID" '{
+      "response_headers": {
+        "headers": [
+          {
+        "headers": [
+            {
+                "key": ":status",
+                "value": "200"
+            },
+            {
+                "key": "X-Moesif-Gloo-ID",
+                "value": $id
+            }
+        ]
+          }
+        ]
+      }
+    }')
+  
+  echo "Constructed Response JSON:"
+  echo "$RESPONSE_JSON"
+  grpcurl -plaintext \
+      -import-path moesif-exproc/data-plane-api/ \
+      -import-path moesif-exproc/udpa \
+      -import-path moesif-exproc/protoc-gen-validate \
+      -proto envoy/service/ext_proc/v3/external_processor.proto \
+      -d "$RESPONSE_JSON" \
+      localhost:50051 envoy.service.ext_proc.v3.ExternalProcessor/Process  
+done
+
+petr@petr-solo:~/github.com/Moesif/moesif-envoy-wasm-plugin/moesif-exproc$ kubectl logs moesif-exproc-plugin-864c94c456-w2w8x -f
+Logging level set to: TRACE
+[2024-08-30T06:23:25Z INFO  moesif_envoy_exproc_plugin::config] Config initialized: EnvConfig { moesif_application_id: "eyJhcHAiOiI0OTM6MTI4NiIsInZlciI6IjIuMSIsIm9yZyI6IjU3Mzo1NzAiLCJpYXQiOjE3MjI0NzA0MDB9.Bg4CIwiKtLgcv0vfNK-B6ztAe2KuYRM7ThIAaDz1D9I", user_id_header: Some("Solo-Developer"), company_id_header: Some("extproc-cluster-1"), batch_max_size: 100, batch_max_wait: 2000, upstream: "outbound|443||api.moesif.net", base_uri: "https://api.moesif.net", debug: true, connection_timeout: 5000 }
+Starting Moesif ExtProc gRPC server for Solo.io Gloo Gateway on 0.0.0.0:50051
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::grpc_service] Processing new gRPC request...
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::grpc_service] Returning gRPC response stream.
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::grpc_service] Received message: ProcessingRequest { metadata_context: Some(Metadata { filter_metadata: {}, typed_filter_metadata: {} }), attributes: {}, observability_mode: false, request: Some(RequestHeaders(HttpHeaders { headers: Some(HeaderMap { headers: [HeaderValue { key: ":authority", value: "", raw_value: b"moesif.example.com:8080" }, HeaderValue { key: ":path", value: "", raw_value: b"/headers" }, HeaderValue { key: ":method", value: "", raw_value: b"GET" }, HeaderValue { key: ":scheme", value: "", raw_value: b"http" }, HeaderValue { key: "user-agent", value: "", raw_value: b"curl/7.81.0" }, HeaderValue { key: "accept", value: "", raw_value: b"*/*" }, HeaderValue { key: "x-forwarded-proto", value: "", raw_value: b"http" }, HeaderValue { key: "x-request-id", value: "", raw_value: b"ba1611c0-3119-4794-9a6a-fb04e639c14c" }] }), attributes: {}, end_of_stream: true })) }
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Headers found: Some(HeaderMap { headers: [HeaderValue { key: ":authority", value: "", raw_value: b"moesif.example.com:8080" }, HeaderValue { key: ":path", value: "", raw_value: b"/headers" }, HeaderValue { key: ":method", value: "", raw_value: b"GET" }, HeaderValue { key: ":scheme", value: "", raw_value: b"http" }, HeaderValue { key: "user-agent", value: "", raw_value: b"curl/7.81.0" }, HeaderValue { key: "accept", value: "", raw_value: b"*/*" }, HeaderValue { key: "x-forwarded-proto", value: "", raw_value: b"http" }, HeaderValue { key: "x-request-id", value: "", raw_value: b"ba1611c0-3119-4794-9a6a-fb04e639c14c" }] })
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Parsed headers: {"user-agent": "", ":scheme": "", ":path": "", ":method": "", "x-request-id": "", "x-forwarded-proto": "", ":authority": "", "accept": ""}
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Parsed URI: 
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Parsed method: 
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Filtered headers: {"user-agent": "", "x-request-id": "", "x-forwarded-proto": "", "accept": ""}
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Client IP: None
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] API Version: None
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Transfer Encoding: None
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] X-Request-ID: ""
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Request & Response Data: {"request_id":"","request":{"time":"2024-08-30T06:23:46.801105652+00:00","verb":"","uri":"","headers":{"user-agent":"","x-request-id":"","x-forwarded-proto":"","accept":""},"transfer_encoding":null,"api_version":null,"ip_address":null,"body":null},"response":null,"user_id":"Solo-Developer","company_id":"extproc-cluster-1","metadata":null,"direction":"Incoming","session_token":null,"blocked_by":null}
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::root_context] Stored request in noresponse_yet_events_buffer with ID: 
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::grpc_service] Sending gRPC response with headers: {}
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Response sent successfully.
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::grpc_service] Received message: ProcessingRequest { metadata_context: Some(Metadata { filter_metadata: {}, typed_filter_metadata: {} }), attributes: {}, observability_mode: false, request: Some(ResponseHeaders(HttpHeaders { headers: Some(HeaderMap { headers: [HeaderValue { key: ":status", value: "", raw_value: b"200" }, HeaderValue { key: "access-control-allow-credentials", value: "", raw_value: b"true" }, HeaderValue { key: "access-control-allow-origin", value: "", raw_value: b"*" }, HeaderValue { key: "content-type", value: "", raw_value: b"application/json; encoding=utf-8" }, HeaderValue { key: "date", value: "", raw_value: b"Fri, 30 Aug 2024 06:23:46 GMT" }, HeaderValue { key: "content-length", value: "", raw_value: b"339" }, HeaderValue { key: "x-envoy-upstream-service-time", value: "", raw_value: b"2" }] }), attributes: {}, end_of_stream: false })) }
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Received Response Headers: HttpHeaders { headers: Some(HeaderMap { headers: [HeaderValue { key: ":status", value: "", raw_value: b"200" }, HeaderValue { key: "access-control-allow-credentials", value: "", raw_value: b"true" }, HeaderValue { key: "access-control-allow-origin", value: "", raw_value: b"*" }, HeaderValue { key: "content-type", value: "", raw_value: b"application/json; encoding=utf-8" }, HeaderValue { key: "date", value: "", raw_value: b"Fri, 30 Aug 2024 06:23:46 GMT" }, HeaderValue { key: "content-length", value: "", raw_value: b"339" }, HeaderValue { key: "x-envoy-upstream-service-time", value: "", raw_value: b"2" }] }), attributes: {}, end_of_stream: false }
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] List of Headers in HTTP Response:
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] :status - 200
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] access-control-allow-credentials - true
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] access-control-allow-origin - *
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] content-type - application/json; encoding=utf-8
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] date - Fri, 30 Aug 2024 06:23:46 GMT
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] content-length - 339
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] x-envoy-upstream-service-time - 2
+[2024-08-30T06:23:46Z WARN  moesif_envoy_exproc_plugin::utils] X-Request-Id is empty in the response. Skipping matching.
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::grpc_service] Sending gRPC response with headers: {}
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::utils] Response sent successfully.
+[2024-08-30T06:23:46Z INFO  moesif_envoy_exproc_plugin::grpc_service] Stream processing complete.
+[2024-08-30T06:23:49Z INFO  moesif_envoy_exproc_plugin::root_context] Moved event from temporary to main buffer with ID:  because no response was matched within batch_max_wait time.
+[2024-08-30T06:23:51Z INFO  moesif_envoy_exproc_plugin::root_context] Adding event to JSON array: "{\"request_id\":\"\",\"request\":{\"time\":\"2024-08-30T06:23:46.801105652+00:00\",\"verb\":\"\",\"uri\":\"\",\"headers\":{\"user-agent\":\"\",\"x-request-id\":\"\",\"x-forwarded-proto\":\"\",\"accept\":\"\"},\"transfer_encoding\":null,\"api_version\":null,\"ip_address\":null,\"body\":null},\"response\":null,\"user_id\":\"Solo-Developer\",\"company_id\":\"extproc-cluster-1\",\"metadata\":null,\"direction\":\"Incoming\",\"session_token\":null,\"blocked_by\":null}"
+[2024-08-30T06:23:51Z INFO  moesif_envoy_exproc_plugin::root_context] Final JSON array being sent: [{"request_id":"","request":{"time":"2024-08-30T06:23:46.801105652+00:00","verb":"","uri":"","headers":{"user-agent":"","x-request-id":"","x-forwarded-proto":"","accept":""},"transfer_encoding":null,"api_version":null,"ip_address":null,"body":null},"response":null,"user_id":"Solo-Developer","company_id":"extproc-cluster-1","metadata":null,"direction":"Incoming","session_token":null,"blocked_by":null}]
+[2024-08-30T06:23:51Z INFO  moesif_envoy_exproc_plugin::root_context] Dispatching HTTP request with 1 events.
+[2024-08-30T06:23:51Z INFO  moesif_envoy_exproc_plugin::root_context] Dispatching POST request to https://api.moesif.net/v1/events/batch with headers: {"content-type": "application/json", "x-moesif-application-id": "eyJhcHAiOiI0OTM6MTI4NiIsInZlciI6IjIuMSIsIm9yZyI6IjU3Mzo1NzAiLCJpYXQiOjE3MjI0NzA0MDB9.Bg4CIwiKtLgcv0vfNK-B6ztAe2KuYRM7ThIAaDz1D9I"} and body: [{"request_id":"","request":{"time":"2024-08-30T06:23:46.801105652+00:00","verb":"","uri":"","headers":{"user-agent":"","x-request-id":"","x-forwarded-proto":"","accept":""},"transfer_encoding":null,"api_version":null,"ip_address":null,"body":null},"response":null,"user_id":"Solo-Developer","company_id":"extproc-cluster-1","metadata":null,"direction":"Incoming","session_token":null,"blocked_by":null}]
+[2024-08-30T06:23:51Z DEBUG reqwest::connect] starting new connection: https://api.moesif.net/
+[2024-08-30T06:23:51Z INFO  moesif_envoy_exproc_plugin::root_context] Received response with status: 201 Created
+[2024-08-30T06:23:51Z INFO  moesif_envoy_exproc_plugin::root_context] Event Response eTags: config=Some("-27549092") rules=None

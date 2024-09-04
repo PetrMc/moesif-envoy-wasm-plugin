@@ -5,7 +5,7 @@ metadata:
   namespace: default
 spec:
   ports:
-  - port: 80
+  - port: 5678
     targetPort: 5678
   selector:
     app: echo
